@@ -26,7 +26,7 @@ from vllm.model_executor.layers.rotary_embedding import (
     YaRNScalingRotaryEmbedding)
 
 from vllm_ascend.platform import NPUPlatform
-from vllm_ascend.utils import enable_custom_op, is_310p
+from vllm_ascend.utils import enable_custom_op, is_310p, is_Ascend950
 
 
 def _custom_rotary_embedding_enabled(query, neox_style, head_size):
@@ -405,7 +405,7 @@ class AscendMRotaryEmbedding(MRotaryEmbedding):
         query: torch.Tensor,
         key: torch.Tensor,
     ):
-        if self.mrope_section != [16, 24, 24]:
+        if self.mrope_section != [16, 24, 24] or is_Ascend950():
             return super().forward_oot(positions, query, key)
 
         import torch_npu
