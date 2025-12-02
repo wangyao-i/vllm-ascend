@@ -41,7 +41,9 @@ from vllm_ascend.attention.utils import (AscendCommonAttentionMetadata,
                                          split_decodes_and_prefills)
 from vllm_ascend.compilation.acl_graph import (get_graph_params,
                                                update_graph_params_workspaces)
-from vllm_ascend.utils import prefill_context_parallel_enable, weak_ref_tensors
+from vllm_ascend.utils import (AscendDeviceType, get_ascend_device_type,
+                               prefill_context_parallel_enable,
+                               weak_ref_tensors)
 
 # isort: off
 if prefill_context_parallel_enable():
@@ -1413,12 +1415,20 @@ class AscendAttentionBackendImpl(AttentionImpl):
             if has_decode:
                 slot_mapping = attn_metadata.slot_mapping[:num_decode_tokens * self.pcp_size: self.pcp_size] \
                     if self.pcp_size * self.dcp_size > 1 else attn_metadata.slot_mapping[:num_decode_tokens]
-                torch_npu._npu_reshape_and_cache(
-                    key=key[:num_decode_tokens],
-                    value=value[:num_decode_tokens],
-                    key_cache=self.key_cache,
-                    value_cache=self.value_cache,
-                    slot_indices=slot_mapping)
+                if get_ascend_device_type() == AscendDeviceType._910_95:
+                    torch_npu.npu_scatter_pa_kv_cache(
+                        key=key[:num_decode_tokens],
+                        value=value[:num_decode_tokens],
+                        key_cache=self.key_cache,
+                        value_cache=self.value_cache,
+                        slot_indices=slot_mapping)
+                else:
+                    torch_npu._npu_reshape_and_cache(
+                        key=key[:num_decode_tokens],
+                        value=value[:num_decode_tokens],
+                        key_cache=self.key_cache,
+                        value_cache=self.value_cache,
+                        slot_indices=slot_mapping)
 
             if has_prefill:
                 if self.pcp_size > 1:
@@ -1432,18 +1442,35 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     key, value = all_kv.split([self.head_size, self.head_size],
                                               dim=-1)
 
-                torch_npu._npu_reshape_and_cache(
-                    key=key[self.pcp_size * num_decode_tokens:attn_metadata.
-                            num_actual_tokens_pcp_padded],
-                    value=value[self.pcp_size *
+                if get_ascend_device_type() == AscendDeviceType._910_95:
+                    torch_npu.npu_scatter_pa_kv_cache(
+                        key=key[self.pcp_size *
                                 num_decode_tokens:attn_metadata.
                                 num_actual_tokens_pcp_padded],
-                    key_cache=self.key_cache,
-                    value_cache=self.value_cache,
-                    slot_indices=attn_metadata.
-                    slot_mapping[self.pcp_size *
-                                 num_decode_tokens:attn_metadata.
-                                 num_actual_tokens_pcp_padded])
+                        value=value[self.pcp_size *
+                                    num_decode_tokens:attn_metadata.
+                                    num_actual_tokens_pcp_padded].contiguous(),
+                        key_cache=self.key_cache,
+                        value_cache=self.value_cache,
+                        slot_mapping=attn_metadata.
+                        slot_mapping[self.pcp_size *
+                                     num_decode_tokens:attn_metadata.
+                                     num_actual_tokens_pcp_padded],
+                        out=(self.key_cache, self.value_cache))
+                else:
+                    torch_npu._npu_reshape_and_cache(
+                        key=key[self.pcp_size *
+                                num_decode_tokens:attn_metadata.
+                                num_actual_tokens_pcp_padded],
+                        value=value[self.pcp_size *
+                                    num_decode_tokens:attn_metadata.
+                                    num_actual_tokens_pcp_padded],
+                        key_cache=self.key_cache,
+                        value_cache=self.value_cache,
+                        slot_indices=attn_metadata.
+                        slot_mapping[self.pcp_size *
+                                     num_decode_tokens:attn_metadata.
+                                     num_actual_tokens_pcp_padded])
 
         forward_context: ForwardContext = get_forward_context()
         if not forward_context.capturing:
