@@ -107,7 +107,7 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
             dynamic_scale = dynamic_scale.reshape(dynamic_scale.shape[0], dynamic_scale.shape[1]//2, 2)
         pertoken_scale = dynamic_scale
 
-    weight_prefetch_method = get_forward_context().weight_prefetch_method
+    weight_prefetch_method = get_weight_prefetch_method()
     if weight_prefetch_method:
         weight_prefetch_method.maybe_prefetch_moe_weight_postprocess(
             hidden_states)

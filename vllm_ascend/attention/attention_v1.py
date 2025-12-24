@@ -449,11 +449,15 @@ class AscendAttentionBackendImpl(AttentionImpl):
 
     def _get_fia_params(self, key: torch.Tensor, value: torch.Tensor,
                         attn_metadata: AscendMetadata):
-
+        attn_mask = attn_metadata.attn_mask
+        sparse_mode = 3
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
             block_size = 128
             block_table = None
             actual_seq_lengths_kv = attn_metadata.actual_seq_lengths_q
+            num_tokens = attn_metadata.actual_seq_lengths_q[-1]
+            key = key[:num_tokens]
+            value = value[:num_tokens]
         elif attn_metadata.attn_state == \
                 AscendAttentionState.PrefillCacheHit:
             batch_size = attn_metadata.seq_lens.shape[0]
@@ -472,6 +476,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_block, block_size, -1)
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
+            attn_mask = None
+            sparse_mode = 0
         # chunked prefill.
         else:
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
@@ -481,7 +487,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_block, block_size, -1)
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
-        return key, value, block_size, block_table, actual_seq_lengths_kv
+        return key, value, block_size, block_table, actual_seq_lengths_kv, attn_mask, sparse_mode
 
     def _forward_fia_slidingwindow(self, query: torch.Tensor,
                                    attn_metadata: AscendMetadata,
@@ -528,7 +534,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 and attn_metadata.seq_lens.shape[0] == query.size(0)):
             return self._forward_fia_slidingwindow(query, attn_metadata,
                                                    output)
-        key, value, block_size, block_table, actual_seq_lengths_kv \
+        key, value, block_size, block_table, actual_seq_lengths_kv, attn_mask, sparse_mode \
             = self._get_fia_params(key, value, attn_metadata)
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
         query = query[:num_tokens]
@@ -537,7 +543,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             query=query,
             key=key,
             value=value,
-            atten_mask=attn_metadata.attn_mask,
+            atten_mask=attn_mask,
             block_table=block_table,
             input_layout="TND",
             block_size=block_size,
@@ -546,7 +552,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             num_key_value_heads=self.num_kv_heads,
             num_heads=self.num_heads,
             scale=self.scale,
-            sparse_mode=3,
+            sparse_mode=sparse_mode,
         )
 
         attn_output = attn_output.view(num_tokens, self.num_heads,
