@@ -175,10 +175,8 @@ def mla_forward(
         attn_metadata = forward_context.attn_metadata
     kv_cache = self.mla_attn.kv_cache[forward_context.virtual_engine]
     if hasattr(self.mla_attn, "quant_method") and self.mla_attn.fa_quant_layer:
-        assert output is not None, "Output tensor must be provided."
         self.mla_attn.quant_method.apply(self.mla_attn, hidden_states, kv_cache, attn_metadata, self.mla_modules, need_gather_q_kv, output)
     else:
-        assert output is not None, "Output tensor must be provided."
         self.mla_attn.impl.forward(self.mla_attn.layer_name, hidden_states,
                                 kv_cache, attn_metadata, need_gather_q_kv,
                                 output)
