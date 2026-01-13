@@ -430,6 +430,7 @@ class AscendLinearMethod(LinearMethodBase):
             tp_rank = 0
         return self.quant_method.apply(layer, x, bias, tp_rank)
 
+M = TypeVar("M", bound=AscendMLAMetadata)
 
 class AscendKVCacheMethod(BaseKVCacheMethod):
     """KVCache method for Ascend quantization.
