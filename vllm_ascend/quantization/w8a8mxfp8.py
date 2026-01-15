@@ -247,6 +247,22 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod:
             layer.w13_weight_scale.data = layer.w13_weight_scale.data.transpose(1, 2)
             layer.w2_weight_scale.data = layer.w2_weight_scale.data.transpose(1, 2)
 
+def weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor):
+    """fa_q weight loader."""
+    if param.numel() == 1 and loaded_weight.numel() == 1:
+        param.data.fill_(loaded_weight.item())
+    else:
+        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
+        shard_size = loaded_weight.shape[0] // tp_size
+        loaded_weight = loaded_weight.narrow(0, shard_size * tp_rank,
+                                             shard_size)
+        assert param.size() == loaded_weight.size(), (
+            f"Attempted to load weight ({loaded_weight.size()}) "
+            f"into parameter ({param.size()}) when TP is ({tp_size})")
+
+        param.data.copy_(loaded_weight)
+
 M = TypeVar("M", bound=AscendMLAMetadata)
 
 class AscendFAQuantAttentionMethod:
