@@ -537,9 +537,10 @@ class SequenceRowParallelOp(CustomRowParallelOp):
 
         from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 
-        from vllm_ascend.quantization.method_adapters import AscendLinearMethod
-        from vllm_ascend.quantization.methods import AscendW8A8LinearMethod
-
+        from vllm_ascend.quantization.quant_config import AscendLinearMethod
+        from vllm_ascend.quantization.w8a8 import AscendW8A8LinearMethod
+        from vllm_ascend.quantization.w8a8mxfp8 import AscendW8A8MXFP8DynamicLinearMethod
+                            
         # For unquant
         if mmrs_fusion and isinstance(self.layer.quant_method, UnquantizedLinearMethod):
             output = torch_npu.npu_mm_reduce_scatter_base(
@@ -554,6 +555,31 @@ class SequenceRowParallelOp(CustomRowParallelOp):
             )
             if bias_ is not None:
                 output.add_(bias_)
+                        
+        # For A5 w8a8 quant
+        elif mmrs_fusion and (
+                isinstance(self.layer.quant_method, AscendLinearMethod)
+                and isinstance(self.layer.quant_method.quant_method,
+                                AscendW8A8MXFP8DynamicLinearMethod)):
+            quantized_x, dynamic_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
+            pertoken_scale = dynamic_scale
+            GROUP_SIZE = 32
+            output_dtype = x.dtype
+            output, amaxout = torch_npu.npu_quant_mm_reduce_scatter(
+                quantized_x,
+                self.layer.weight,
+                hcom_name,
+                world_size,
+                reduce_op="sum",
+                bias=None,
+                comm_turn=0,
+                x2_scale=self.layer.weight_scale,
+                x2_scale_dtype=torch_npu.float8_e8m0fnu,
+                x1_scale=pertoken_scale,
+                x1_scale_dtype=torch_npu.float8_e8m0fnu,
+                group_sizes=[1, 1, GROUP_SIZE],
+                y_dtype=output_dtype)
+                                  
         # For w8a8 quant
         elif mmrs_fusion and (
             isinstance(self.layer.quant_method, AscendLinearMethod)
