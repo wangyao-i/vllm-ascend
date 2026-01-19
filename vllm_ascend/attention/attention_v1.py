@@ -330,7 +330,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
     def full_graph_fia(self, query: torch.Tensor, key: torch.Tensor,
                        value: torch.Tensor, attn_metadata: AscendMetadata,
                        output: torch.Tensor) -> torch.Tensor:
-        key, value, block_size, block_table, actual_seq_lengths_kv, attn_mask, sparse_mode \
+        key, value, block_size, block_table, actual_seq_lengths_kv \
             = self._get_fia_params(key, value, attn_metadata)
 
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
@@ -351,7 +351,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 query=query,
                 key=key,
                 value=value,
-                atten_mask=attn_mask,
+                atten_mask=attn_metadata.attn_mask,
                 block_table=block_table,
                 input_layout="TND",
                 block_size=block_size,
@@ -359,7 +359,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 actual_seq_lengths_kv=actual_seq_lengths_kv,
                 num_key_value_heads=self.num_kv_heads,
                 num_heads=self.num_heads,
-                sparse_mode=sparse_mode,
+                sparse_mode=3,
                 scale=self.scale,
             )
             if forward_context.is_draft_model:
@@ -377,9 +377,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
         graph_params.attn_params[num_tokens].append(
             (weak_ref_tensors(query), weak_ref_tensors(key),
              weak_ref_tensors(value), weak_ref_tensors(block_table),
-             attn_mask, block_size,
+             weak_ref_tensors(attn_metadata.attn_mask), block_size,
              actual_seq_lengths_kv, actual_seq_lengths_q, self.num_kv_heads,
-             self.num_heads, sparse_mode, self.scale, weak_ref_tensors(output),
+             self.num_heads, self.scale, weak_ref_tensors(output),
              weak_ref_tensors(softmax_lse)))
 
         torch.npu.graph_task_group_begin(stream)
@@ -387,7 +387,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             query=query,
             key=key,
             value=value,
-            atten_mask=attn_mask,
+            atten_mask=attn_metadata.attn_mask,
             block_table=block_table,
             input_layout="TND",
             block_size=block_size,
@@ -396,7 +396,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             num_key_value_heads=self.num_kv_heads,
             num_heads=self.num_heads,
             scale=self.scale,
-            sparse_mode=sparse_mode,
+            sparse_mode=3,
             workspace=workspace,
             out=[output, softmax_lse],
         )
