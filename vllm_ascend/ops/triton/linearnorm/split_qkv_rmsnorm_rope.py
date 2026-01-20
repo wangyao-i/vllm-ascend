@@ -22,7 +22,7 @@ import triton.language as tl  # type: ignore
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
-
+import triton.language.extra.cann.extension as extension
 
 @triton.jit
 def split_qkv_rmsnorm_rope_kernel(
@@ -81,13 +81,13 @@ def split_qkv_rmsnorm_rope_kernel(
         sc_offsets = row_idx * HEAD_DIM + tl.arange(0, HEAD_DIM)
         sin = (tl.load(sin_ptr + sc_offsets)).reshape(1, HEAD_DIM)
         cos = (tl.load(cos_ptr + sc_offsets)).reshape(1, HEAD_DIM)
-        x1 = tl.extract_slice(
+        x1 = extension.extract_slice(
             normalized_values,
             offsets=(0, 0),
             sizes=(Q_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        x2 = tl.extract_slice(
+        x2 = extension.extract_slice(
             normalized_values,
             offsets=(0, HALF_HEAD_DIM),
             sizes=(Q_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
@@ -95,14 +95,14 @@ def split_qkv_rmsnorm_rope_kernel(
         )
         cat_x = tl.zeros((Q_BLOCK_SIZE // HEAD_DIM, HEAD_DIM),
                          dtype=tl.bfloat16)
-        cat_x = tl.insert_slice(
+        cat_x = extension.insert_slice(
             cat_x,
             -x2,
             offsets=(0, 0),
             sizes=(Q_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        cat_x = tl.insert_slice(
+        cat_x = extension.insert_slice(
             cat_x,
             x1,
             offsets=(0, HALF_HEAD_DIM),
@@ -146,13 +146,13 @@ def split_qkv_rmsnorm_rope_kernel(
         sc_offsets = row_idx * HEAD_DIM + tl.arange(0, HEAD_DIM)
         sin = (tl.load(sin_ptr + sc_offsets)).reshape(1, HEAD_DIM)
         cos = (tl.load(cos_ptr + sc_offsets)).reshape(1, HEAD_DIM)
-        x1 = tl.extract_slice(
+        x1 = extension.extract_slice(
             normalized_values,
             offsets=(0, 0),
             sizes=(KV_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        x2 = tl.extract_slice(
+        x2 = extension.extract_slice(
             normalized_values,
             offsets=(0, HALF_HEAD_DIM),
             sizes=(KV_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
@@ -160,14 +160,14 @@ def split_qkv_rmsnorm_rope_kernel(
         )
         cat_x = tl.zeros((KV_BLOCK_SIZE // HEAD_DIM, HEAD_DIM),
                          dtype=tl.bfloat16)
-        cat_x = tl.insert_slice(
+        cat_x = extension.insert_slice(
             cat_x,
             -x2,
             offsets=(0, 0),
             sizes=(KV_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        cat_x = tl.insert_slice(
+        cat_x = extension.insert_slice(
             cat_x,
             x1,
             offsets=(0, HALF_HEAD_DIM),
