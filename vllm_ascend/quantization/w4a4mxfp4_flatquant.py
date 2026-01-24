@@ -127,9 +127,10 @@ class AscendW4A4FpFlatQuantDynamicLinearMethod:
 
     def process_weights_after_loading(self, layer):
         layer.weight.data = torch_npu.npu_dtype_cast(layer.weight.data, torch_npu.float4_e2m1fn_x2)
+        layer.weight_scale.data = layer.weight_scale.data.view(-1, layer.weight_scale.shape[-1] // 2, 2)
         if self.transpose_weight:
             layer.weight.data = layer.weight.data.transpose(0, 1)
-        layer.weight_scale.data = layer.weight_scale.data.view(-1, layer.weight_scale.shape[-1] // 2, 2)
+            layer.weight_scale.data = layer.weight_scale.data.transpose(0, 1)
 
         layer.left_trans = torch.nn.Parameter(layer.left_trans.data.t().contiguous())
         layer.right_trans = torch.nn.Parameter(layer.right_trans.data)
