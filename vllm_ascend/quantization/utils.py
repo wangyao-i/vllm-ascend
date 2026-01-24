@@ -6,6 +6,7 @@ from vllm.logger import logger
 from vllm_ascend.utils import COMPRESSED_TENSORS_METHOD
 
 from .w4a4_flatquant_dynamic import AscendW4A4FlatQuantDynamicLinearMethod
+from .w4a4mxfp4_flatquant import AscendW4A4FpFlatQuantDynamicLinearMethod
 from .w4a8_dynamic import (AscendW4A8DynamicFusedMoEMethod,
                            AscendW4A8DynamicLinearMethod)
 from .w4a16 import AscendW4A16FusedMoEMethod
@@ -28,6 +29,9 @@ ASCEND_QUANTIZATION_METHOD_MAP: Dict[str, Dict[str, Type[Any]]] = {
     },
     "W4A4_FLATQUANT_DYNAMIC": {
         "linear": AscendW4A4FlatQuantDynamicLinearMethod,
+    },
+    "W4A4_MXFP4_FLATQUANT": {
+        "linear": AscendW4A4FpFlatQuantDynamicLinearMethod,
     },
     "W8A8": {
         "linear": AscendW8A8LinearMethod,
