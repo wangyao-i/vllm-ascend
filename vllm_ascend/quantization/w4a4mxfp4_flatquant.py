@@ -77,6 +77,9 @@ class AscendW4A4FpFlatQuantDynamicLinearMethod:
                            output_size: int,
                            params_dtype: torch.dtype,
                            layer_type: Optional[str] = None) -> Dict[str, Any]:
+        if layer_type == "row":
+            raise ValueError("Tensor Parallelism is not supported for rotated weight tensors"
+                             "of 'o_proj' or 'down_proj' layers.")
         params_dict = {}
         params_dict["weight_scale"] = torch.empty(output_size,
                                                   input_size // GROUP_SIZE,
@@ -100,8 +103,6 @@ class AscendW4A4FpFlatQuantDynamicLinearMethod:
                 f"FlatQuant transform matrices dimension mismatch: "
                 f"left_dim({left_dim}) * right_dim({right_dim}) != in_features({in_features})"
             )
-        # left_trans_matched = layer.left_trans.to(original_dtype)
-        # right_trans_matched = layer.right_trans.to(original_dtype)
         x_reshaped = x.view(-1, left_dim, right_dim)
 
         clip_ratio = 1.0
