@@ -52,6 +52,7 @@ public:
 
         this->AICore().AddConfig("ascend910_93", aicore_config);
         this->AICore().AddConfig("ascend910b", aicore_config_A2);
+        this->AICore().AddConfig("ascend910_95", aicore_config);
         this->MC2().HcclGroup("comm_group");
     }
 };
