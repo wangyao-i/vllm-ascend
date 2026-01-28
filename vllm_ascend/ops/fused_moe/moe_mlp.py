@@ -113,22 +113,21 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
             hidden_states)
 
     x_dtype, weight_dtype, scale_dtype, per_token_scale_dtype = get_a5_quant_extra_args(act_quant_type, weight_quant_type, scale_type, per_token_scale_type)
-    hidden_states = torch_npu.npu_grouped_matmul(x=[hidden_states],
-                                                 weight=[w1],
-                                                 scale=[w1_scale],
-                                                 scale_dtype=scale_dtype,
-                                                 per_token_scale=[pertoken_scale],
-                                                 per_token_scale_dtype=per_token_scale_dtype,
-                                                 split_item=2,
-                                                 group_list_type=group_list_type,
-                                                 group_type=0,
-                                                 group_list=group_list,
-                                                 x_dtype=x_dtype,
-                                                 weight_dtype=weight_dtype,
-                                                 output_dtype=output_dtype)[0]
-    hidden_states = torch_npu.npu_swiglu(hidden_states)
-    hidden_states, swiglu_out_scale = torch_npu.npu_dynamic_mx_quant(hidden_states,
-                                                                     dst_type=act_quant_type)
+
+    hidden_states, swiglu_out_scale = torch_npu.npu_grouped_matmul_swiglu_quant_v2(
+        x=hidden_states,
+        weight=[w1],
+        group_list=cumsum_group_list(group_list, group_list_type, 0),
+        weight_scale=[w1_scale],
+        x_scale=pertoken_scale,
+        dequant_mode=2,
+        quant_mode=2,
+        dequant_dtype=torch.float32,
+        quant_dtype=torch.float8_e4m3fn,
+        weight_scale_dtype=torch_npu.float8_e8m0fnu,
+        x_scale_dtype=torch_npu.float8_e8m0fnu
+    )
+    
     hidden_states = torch_npu.npu_grouped_matmul(x=[hidden_states],
                                                  weight=[w2],
                                                  scale=[w2_scale],
