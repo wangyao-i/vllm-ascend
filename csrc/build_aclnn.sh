@@ -107,9 +107,9 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_95 ]]; then
 
     CUSTOM_OPS_ARRAY=(
         "grouped_matmul_swiglu_quant_weight_nz_tensor_list"
-        "lightning_indexer"
-        "sparse_flash_attention"
-        "dispatch_ffn_combine"
+        # "lightning_indexer" 
+        # "sparse_flash_attention"
+        # "dispatch_ffn_combine"
         "dispatch_gmm_combine_decode"
         "moe_combine_normal"
         "moe_dispatch_normal"
@@ -117,7 +117,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_95 ]]; then
         "notify_dispatch"
     )
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
-    SOC_ARG="ascend910_958b"
+    SOC_ARG="ascend910_95"
 else
     # others
     # currently, no custom aclnn ops for other series
