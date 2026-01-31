@@ -16,7 +16,7 @@
 #
 
 from vllm.triton_utils import tl, triton
-
+import triton.language.extra.cann.extension as extension
 from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
 
 
@@ -48,8 +48,8 @@ def rejection_greedy_sample_spec_len_1_triton(
     tl.store(output_token_ids_ptr + offset * 2, target_argmax_id, mask)
 
     for pos in tl.range(0, BLOCK_SIZE):
-        draft_token_id1 = tl.get_element(draft_token_id, (pos, ))
-        target_argmax1 = tl.get_element(target_argmax_id, (pos, ))
+        draft_token_id1 = extension.get_element(draft_token_id, (pos, ))
+        target_argmax1 = extension.get_element(target_argmax_id, (pos, ))
         position = block_idx * BLOCK_SIZE + pos
         if draft_token_id1 == target_argmax1:
             bonus_renew_1(
@@ -102,10 +102,10 @@ def rejection_greedy_sample_triton(
     num_draft_tokens = end_idx - start_idx
 
     for pos in tl.range(0, BLOCK_SIZE):
-        num_tokens1 = tl.get_element(num_draft_tokens, (pos, ))
+        num_tokens1 = extension.get_element(num_draft_tokens, (pos, ))
         rejected = False
-        start_idx1 = tl.get_element(start_idx, (pos, ))
-        is_greedy_mask1 = tl.get_element(is_greedy_mask, (pos, ))
+        start_idx1 = extension.get_element(start_idx, (pos, ))
+        is_greedy_mask1 = extension.get_element(is_greedy_mask, (pos, ))
         position = block_idx * BLOCK_SIZE + pos
         for i in range(num_tokens1):
             if not rejected:
@@ -213,9 +213,9 @@ def expand_kernel(
     src_val = tl.where(src_val == replace_from, replace_to, src_val)
 
     for i in tl.range(0, BLOCK_SIZE):
-        num_tokens1 = tl.get_element(num_tokens, (i, ))
-        start_idx1 = tl.get_element(start_idx, (i, ))
-        src_val1 = tl.get_element(src_val, (i, ))
+        num_tokens1 = extension.get_element(num_tokens, (i, ))
+        start_idx1 = extension.get_element(start_idx, (i, ))
+        src_val1 = extension.get_element(src_val, (i, ))
         offset1 = tl.arange(0, MAX_NUM_TOKENS)
         tl.store(output_ptr + start_idx1 + offset1,
                  src_val1,
@@ -271,7 +271,7 @@ def sample_recovered_tokens_kernel(
                         other=float("-inf"))
             new_p = prob / q
             recovered_id = tl.argmax(new_p, axis=-1)
-            max_p = tl.get_element(new_p, (recovered_id, ))
+            max_p = extension.get_element(new_p, (recovered_id, ))
             if max_p > global_max_p:
                 global_max_p = max_p
                 global_recovered_id = vocab_start + recovered_id
@@ -297,7 +297,7 @@ def sample_recovered_tokens_kernel(
                         other=float("-inf"))
             new_p = prob / q
             recovered_id = tl.argmax(new_p, axis=-1)
-            max_p = tl.get_element(new_p, (recovered_id, ))
+            max_p = extension.get_element(new_p, (recovered_id, ))
             if max_p > global_max_p:
                 global_max_p = max_p
                 global_recovered_id = vocab_start + recovered_id
