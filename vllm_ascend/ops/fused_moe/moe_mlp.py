@@ -72,10 +72,16 @@ def get_a5_quant_extra_args(act_quant_type,
                     scale_type,
                     per_token_scale_type):
     x_dtype = act_quant_type if act_quant_type in [torch_npu.float4_e2m1fn_x2, torch_npu.hifloat8] else None
-    weight_dtype = weight_quant_type if weight_quant_type in [torch_npu.float4_e2m1fn_x2, torch_npu.hifloat8] else None
-    scale_dtype = scale_type if scale_type in [torch_npu.float8_e8m0fnu] else None
+    use_pseudo_quant = is_use_pseudo_quant(act_quant_type, weight_quant_type)
+    weight_dtype = weight_quant_type if weight_quant_type in [torch_npu.float4_e2m1fn_x2, torch_npu.hifloat8] and \
+                                        not use_pseudo_quant else None
+    scale_dtype = scale_type if scale_type in [torch_npu.float8_e8m0fnu] and not use_pseudo_quant else None
     per_token_scale_dtype = per_token_scale_type if per_token_scale_type in [torch_npu.float8_e8m0fnu] else None
     return x_dtype, weight_dtype, scale_dtype, per_token_scale_dtype
+
+
+def is_use_pseudo_quant(act_quant_type, weight_quant_type):
+    return act_quant_type == torch.float8_e4m3fn and weight_quant_type == torch_npu.float4_e2m1fn_x2
 
 
 def quant_apply_mlp_A5(hidden_states: torch.Tensor,
@@ -94,6 +100,7 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
     per_token_scale_type = kwargs.get("per_token_scale_type", None)
     output_dtype = hidden_states.dtype if hidden_states.dtype in [torch.bfloat16, torch.float16] \
         else (torch.bfloat16 if kwargs.get("use_bf16", True) else torch.float16)
+    use_pseudo_quant = is_use_pseudo_quant(act_quant_type, weight_quant_type)
 
     if dynamic_scale is None:
         unquantized_hidden_states = hidden_states
@@ -107,6 +114,11 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
             dynamic_scale = dynamic_scale.reshape(dynamic_scale.shape[0], dynamic_scale.shape[1]//2, 2)
         pertoken_scale = dynamic_scale
 
+    if pertoken_scale.ndim == 3 and use_pseudo_quant:
+        pertoken_scale = pertoken_scale.reshape(pertoken_scale.shape[0], -1)
+    scale = [w1_scale] if not use_pseudo_quant else None
+    antiquant_scale = [w1_scale] if use_pseudo_quant else None
+
     weight_prefetch_method = get_weight_prefetch_method()
     if weight_prefetch_method:
         weight_prefetch_method.maybe_prefetch_moe_weight_postprocess(
@@ -114,33 +126,58 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
 
     x_dtype, weight_dtype, scale_dtype, per_token_scale_dtype = get_a5_quant_extra_args(act_quant_type, weight_quant_type, scale_type, per_token_scale_type)
 
-    hidden_states, swiglu_out_scale = torch_npu.npu_grouped_matmul_swiglu_quant_v2(
-        x=hidden_states,
-        weight=[w1],
-        group_list=cumsum_group_list(group_list, group_list_type, 0),
-        weight_scale=[w1_scale],
-        x_scale=pertoken_scale,
-        dequant_mode=2,
-        quant_mode=2,
-        dequant_dtype=torch.float32,
-        quant_dtype=torch.float8_e4m3fn,
-        weight_scale_dtype=torch_npu.float8_e8m0fnu,
-        x_scale_dtype=torch_npu.float8_e8m0fnu
-    )
+    if not use_pseudo_quant:
+        hidden_states, swiglu_out_scale = torch_npu.npu_grouped_matmul_swiglu_quant_v2(
+            x=hidden_states,
+            weight=[w1],
+            group_list=cumsum_group_list(group_list, group_list_type, 0),
+            weight_scale=[w1_scale],
+            x_scale=pertoken_scale,
+            dequant_mode=2,
+            quant_mode=2,
+            dequant_dtype=torch.float32,
+            quant_dtype=torch.float8_e4m3fn,
+            weight_scale_dtype=torch_npu.float8_e8m0fnu,
+            x_scale_dtype=torch_npu.float8_e8m0fnu
+        )
+    else:
+        hidden_states = torch_npu.npu_grouped_matmul(x=[hidden_states],
+                                                     weight=[w1],
+                                                     scale=scale,
+                                                     antiquant_scale=antiquant_scale,
+                                                     scale_dtype=scale_dtype,
+                                                     pertoken_scale=[pertoken_scale],
+                                                     per_token_scale_dtype=per_token_scale_dtype,
+                                                     split_item=2,
+                                                     group_list_type=group_list_type,
+                                                     group_type=0,
+                                                     group_list=group_list,
+                                                     x_dtype=x_dtype,
+                                                     weight_dtype=weight_dtype,
+                                                     output_dtype=output_dtype)[0]
+        hidden_states = torch_npu.npu_swiglu(hidden_states)
+        hidden_states, swiglu_out_scale = torch_npu.npu_dynamic_mx_quant(hidden_states,
+                                                                     dst_type=act_quant_type)
     
+    if swiglu_out_scale.ndim == 3 and use_pseudo_quant:
+        swiglu_out_scale = swiglu_out_scale.reshape(swiglu_out_scale.shape[0], -1)
+    scale_2 = [w2_scale] if not use_pseudo_quant else None
+    antiquant_scale_2 = [w2_scale] if use_pseudo_quant else None
+
     hidden_states = torch_npu.npu_grouped_matmul(x=[hidden_states],
-                                                 weight=[w2],
-                                                 scale=[w2_scale],
-                                                 scale_dtype=scale_dtype,
-                                                 per_token_scale=[swiglu_out_scale],
-                                                 per_token_scale_dtype=per_token_scale_dtype,
-                                                 split_item=2,
-                                                 group_list_type=group_list_type,
-                                                 group_type=0,
-                                                 group_list=group_list,
-                                                 x_dtype=x_dtype,
-                                                 weight_dtype=weight_dtype,
-                                                 output_dtype=output_dtype)[0]
+                                                     weight=[w2],
+                                                     scale=scale_2,
+                                                     antiquant_scale=antiquant_scale_2,
+                                                     scale_dtype=scale_dtype,
+                                                     per_token_scale=[swiglu_out_scale],
+                                                     per_token_scale_dtype=per_token_scale_dtype,
+                                                     split_item=2,
+                                                     group_list_type=group_list_type,
+                                                     group_type=0,
+                                                     group_list=group_list,
+                                                     x_dtype=x_dtype,
+                                                     weight_dtype=weight_dtype,
+                                                     output_dtype=output_dtype)[0]
     return hidden_states
     
 def quant_apply_mlp(hidden_states: torch.Tensor,
