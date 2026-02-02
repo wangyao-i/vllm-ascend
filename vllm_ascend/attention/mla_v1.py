@@ -942,14 +942,18 @@ class AscendMLAImpl(MLAAttentionImpl):
         cache_k_pe = kv_c_and_k_pe_cache[1]
         num_heads = cache_k_pe.size(2)
         latent_kv_dim = kv_c_and_k_pe_cache[0].size(-1)
+
+        actual_seq_lengths_q = prefill_metadata.actual_seq_lengths_q
+        chunk_outputs = []
+        chunk_lses = []
+
         for i in range(iters):
             toks = prefill_metadata.chunked_context.seq_tot[i]
             # chunk_seq_lens will be padded when pcp&dcp
-            context_seq_len = prefill_metadata.chunked_context.chunk_seq_lens[
-                i]
-            seq_len = torch.stack([current_seq_len, context_seq_len])
+            context_seq_len = prefill_metadata.chunked_context.chunk_seq_lens[i]
             context_seq_len_npu = self.get_context_seq_len_npu(
                 i, attn_metadata)
+
             kv_c_normed = torch.empty(toks,
                                       num_heads,
                                       latent_kv_dim,
@@ -994,22 +998,30 @@ class AscendMLAImpl(MLAAttentionImpl):
                 .split([self.qk_nope_head_dim, self.v_head_dim], dim=-1)
             k_pe = k_pe.expand((*k_nope.shape[:-1], -1))
 
-            mask = attn_metadata.attn_mask
+            actual_seq_lengths_kv = \
+                prefill_metadata.chunked_context.chunk_actual_seq_lengths_kv_list[i]
+
             if get_ascend_device_type() == AscendDeviceType.A5:
-                prefix_output, prefix_lse = torch_npu.npu_fused_infer_attention_score_v2(
-                    query=q_nope,
-                    key=k_nope,
-                    value=v,
+                chunk_out, chunk_lse = torch_npu.npu_fused_infer_attention_score(
+                    q_nope,
+                    k_nope,
+                    v,
                     query_rope=q_pe,
                     key_rope=k_pe,
-                    actual_seq_qlen=seq_len,
-                    num_query_heads=self.num_heads,
+                    num_heads=self.num_heads,
                     num_key_value_heads=self.num_heads,
-                    input_layout="BSND",
-                    softmax_scale=self.scale,
-                    inner_precise=0,
-                    return_softmax_lse=True)
-                prefix_lse, prefix_output = torch_npu.npu_attention_update(prefix_lse, prefix_output, update_type=1)
+                    input_layout='TND',
+                    atten_mask=None,
+                    sparse_mode=0,
+                    scale=self.scale,
+                    antiquant_mode=0,
+                    antiquant_scale=None,
+                    softmax_lse_flag=True,
+                    actual_seq_lengths=current_seq_len.cumsum(0).tolist(),
+                    actual_seq_lengths_kv=context_seq_len.cumsum(0).tolist(),
+                )
+                chunk_outputs.append(chunk_out)
+                chunk_lses.append(chunk_lse)
             else:
                 torch_npu.atb.npu_ring_mla(
                     q_nope=q_nope,
@@ -1030,6 +1042,38 @@ class AscendMLAImpl(MLAAttentionImpl):
                     calc_type="calc_type_default",
                     output=prefix_output,
                     softmax_lse=prefix_lse)
+        if len(chunk_outputs) > 0:
+            num_tokens = q_nope.size(0)
+            D = self.v_head_dim
+            H = self.num_heads
+
+            # Normalize prefix output/lse to [num_tokens, H, D] and [num_tokens, H, 1]
+            prefix_output = prefix_output.to(torch.float32)
+            prefix_lse = prefix_lse.to(torch.float32)
+            if prefix_lse.dim() == 2:
+                prefix_lse = prefix_lse.transpose(0, 1).unsqueeze(-1)
+
+            # Concat output and lse: [num_tokens, H, D+1]
+            all_out_lse = [torch.cat([prefix_output, prefix_lse], dim=-1)]
+            for chunk_out, chunk_lse in zip(chunk_outputs, chunk_lses):
+                chunk_out = chunk_out.to(torch.float32)
+                chunk_lse = chunk_lse.to(torch.float32)
+                if chunk_lse.dim() == 2:
+                    chunk_lse = chunk_lse.transpose(0, 1).unsqueeze(-1)
+                all_out_lse.append(torch.cat([chunk_out, chunk_lse], dim=-1))
+
+            # Stack and split: [N, num_tokens, H, D+1]
+            all_out_lse = torch.stack(all_out_lse, dim=0)
+            N = all_out_lse.size(0)
+            out_flat, lse_flat = torch.split(all_out_lse, [D, 1], dim=-1)
+
+            # Flatten and unbind for npu_attention_update
+            out_list = out_flat.view(N, num_tokens * H, D).unbind(0)
+            lse_list = lse_flat.view(N, num_tokens * H).unbind(0)
+
+            output_final, _ = torch_npu.npu_attention_update(
+                lse_list, out_list, 0)
+            return output_final.view(num_tokens, H, D), None
         return prefix_output, prefix_lse
 
     def _forward_prefill(
