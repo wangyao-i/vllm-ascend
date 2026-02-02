@@ -748,9 +748,9 @@ class AscendMLAImpl(MLAAttentionImpl):
 
     def _v_up_proj(self, x):
         # Convert from (N, B, L)/(N, B, 1, L) to (N, B, L)
-        x = x.view(self.num_heads, -1, self.kv_lora_rank)
+        x = x.view(-1, self.num_heads, self.kv_lora_rank)
         # Multiply (N, B, L) x (N, L, V) -> (B, N, V)
-        x = torch_npu.npu_transpose_batchmatmul(x, self.W_UV, perm_y=(1, 0, 2))
+        x = torch_npu.npu_transpose_batchmatmul(x, self.W_UV, perm_x1=(1, 0, 2), perm_y=(1, 0, 2))
         # Convert from (B, N, V) to (B, N * V)
         x = x.reshape(-1, self.num_heads * self.v_head_dim)
         return x
@@ -1251,7 +1251,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             # Output shape: [num_heads, num_reqs, seq_len, dim]
             # The output layout is set to NBSD to eliminate the need for a
             # transpose operation after attention.
-            input_layout = "BNSD_NBSD"
+            input_layout = "BNSD"
             q_nope = q_nope.view(num_tokens, self.num_heads, 1,
                                  -1).contiguous()
             q_pe = q_pe.view(num_tokens, self.num_heads, 1, -1)
@@ -1297,7 +1297,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     update_graph_params_workspaces(num_tokens, workspace)
 
             attn_output = torch.empty(
-                (q_nope.shape[1], q_nope.shape[0], *q_nope.shape[2:]),
+                (q_nope.shape[0], q_nope.shape[1], *q_nope.shape[2:]),
                 dtype=q_nope.dtype,
                 device=q_nope.device)
             softmax_lse = torch.empty(num_tokens,
