@@ -102,7 +102,7 @@ class AscendW4A8MXFPDynamicLinearMethod:
             layer.weight_scale.data = layer.weight_scale.data.transpose(0, 1)
 
 
-class AscendW4A8MXFP8DynamicFusedMoEMethod:
+class AscendW4A8MXFPDynamicFusedMoEMethod:
     """FusedMoe method for Ascend W4A8_MXFP.
     """
     model_dtype = None
@@ -121,7 +121,7 @@ class AscendW4A8MXFP8DynamicFusedMoEMethod:
         self.dynamic_eplb = ascend_config.dynamic_eplb or ascend_config.expert_map_record_path
         self.additional_quant_config = None
 
-    def update_addtional_quant_config(self, additional_quant_config: dict):
+    def update_additional_quant_config(self, additional_quant_config: dict):
         self.additional_quant_config = additional_quant_config
 
     @staticmethod
