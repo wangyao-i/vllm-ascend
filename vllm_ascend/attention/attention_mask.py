@@ -64,7 +64,7 @@ class AttentionMaskBuilder:
             else:
                 mask_value = 1
             prefill_mask = torch.triu(
-                torch.ones(2048, 2048, device=self.device, dtype=dtype), 1)
+                torch.ones(512, 512, device=self.device, dtype=dtype), 1)
             self.mla_mask = torch.where(prefill_mask == 1, mask_value,
                                         0).to(dtype)
         return self.mla_mask
@@ -72,7 +72,7 @@ class AttentionMaskBuilder:
     def get_pcp_mla_mask(self, dtype: torch.dtype):
         if self.pcp_mla_mask is None or self.pcp_mla_mask.dtype != dtype:
             self.pcp_mla_mask = torch.triu(
-                torch.ones(2048, 2048, device=self.device, dtype=dtype), 1)
+                torch.ones(512, 512, device=self.device, dtype=dtype), 1)
         return self.pcp_mla_mask
 
     def get_swa_mask(self, dtype: torch.dtype, sliding_window):
