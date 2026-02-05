@@ -48,6 +48,8 @@ from vllm_ascend.utils import (ASCEND_QUANTIZATION_METHOD, flashcomm2_enable,
 from .utils import get_quant_method
 from .w8a8mxfp8 import (AscendW8A8MXFP8DynamicLinearMethod,
                         AscendW8A8MXFP8DynamicFusedMoEMethod)
+from .w4a8mxfp import (AscendW4A8MXFPDynamicLinearMethod,
+                        AscendW4A8MXFPDynamicFusedMoEMethod)
 
 @register_quantization_config(ASCEND_QUANTIZATION_METHOD)
 class AscendQuantConfig(QuantizationConfig):
@@ -383,7 +385,7 @@ class AscendLinearMethod(LinearMethodBase):
             output_size_per_partition,
             params_dtype,
             layer_type=layer_type)
-        mx_type = (AscendW8A8MXFP8DynamicLinearMethod)
+        mx_type = (AscendW8A8MXFP8DynamicLinearMethod, AscendW4A8MXFPDynamicLinearMethod)
         for pergroup_name, pergroup_param in pergroup_dict.items():
             param = torch.nn.Parameter(pergroup_param, requires_grad=False)
             set_weight_attrs(param, {"output_dim": 0})
@@ -477,7 +479,7 @@ class AscendFusedMoEMethod(FusedMoEMethodBase):
         params_dtype: torch.dtype,
         **extra_weight_attrs,
     ) -> None:
-        mx_type = (AscendW8A8MXFP8DynamicFusedMoEMethod)
+        mx_type = (AscendW8A8MXFP8DynamicFusedMoEMethod, AscendW4A8MXFPDynamicFusedMoEMethod)
         weight_param = self.quant_method.get_weight(
             num_experts, intermediate_size_per_partition, hidden_size,
             params_dtype)
