@@ -115,7 +115,7 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
         pertoken_scale = dynamic_scale
 
     if pertoken_scale.ndim == 3 and use_pseudo_quant:
-        pertoken_scale = pertoken_scale.reshape(pertoken_scale.shape[0], -1)
+        pertoken_scale = pertoken_scale.reshape(-1, pertoken_scale.shape[1]*pertoken_scale.shape[2])
     scale = [w1_scale] if not use_pseudo_quant else None
     antiquant_scale = [w1_scale] if use_pseudo_quant else None
 
@@ -160,7 +160,7 @@ def quant_apply_mlp_A5(hidden_states: torch.Tensor,
                                                                      dst_type=act_quant_type)
     
     if swiglu_out_scale.ndim == 3 and use_pseudo_quant:
-        swiglu_out_scale = swiglu_out_scale.reshape(swiglu_out_scale.shape[0], -1)
+        swiglu_out_scale = swiglu_out_scale.reshape(-1, swiglu_out_scale.shape[1]*swiglu_out_scale.shape[2])
     scale_2 = [w2_scale] if not use_pseudo_quant else None
     antiquant_scale_2 = [w2_scale] if use_pseudo_quant else None
 
