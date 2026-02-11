@@ -69,18 +69,8 @@ set(VLLM_ASCEND_CUSTOM_OP_EXCLUDE
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/batch_matmul_transpose/op_kernel/batch_matmul_transpose_kernel.cpp
 )
 
-set(VLLM_ASCEND_CUSTOM_OP_ASCEND910_95
-    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/mla_preprocess/op_kernel/mla_preprocess_kernel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/batch_matmul_transpose/op_kernel/batch_matmul_transpose_kernel.cpp
-)
-
 if(SOC_VERSION STREQUAL "ASCEND310P3")
     list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_EXCLUDE})
-endif()
-
-if(SOC_VERSION MATCHES "ascend910_95")
-    list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_ASCEND910_95})
-    add_compile_definitions(ASCEND91095)
 endif()
 
 ascendc_library(vllm_ascend_kernels SHARED
