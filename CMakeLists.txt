@@ -78,9 +78,9 @@ if(SOC_VERSION STREQUAL "ASCEND310P3")
     list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_EXCLUDE})
 endif()
 
-if(SOC_VERSION MATCHES "ascend910_95")
+if(SOC_VERSION MATCHES "ascend950")
     list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_ASCEND910_95})
-    add_compile_definitions(ASCEND91095)
+    add_compile_definitions(_ASCEND950)
 endif()
 
 ascendc_library(vllm_ascend_kernels SHARED

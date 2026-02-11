@@ -74,7 +74,6 @@ def get_value_from_lines(lines: List[str], key: str) -> str:
 
 
 def get_chip_type() -> str:
-    return "ascend910_958b"
     try:
         npu_info_lines = subprocess.check_output(
             ['npu-smi', 'info', '-l']).decode().strip().split('\n')
@@ -99,6 +98,9 @@ def get_chip_type() -> str:
                 # A3 case
                 assert npu_name
                 return (chip_name + '_' + npu_name).lower()
+        elif "950" in chip_name:
+            assert npu_name
+            return (chip_name + '_' + npu_name).lower()
         else:
             # TODO(zzzzwwjj): Currently, A5's chip name has not determined yet.
             raise ValueError(
@@ -134,7 +136,7 @@ else:
 
 
 def gen_build_info():
-    # soc_version = envs.SOC_VERSION
+    soc_version = envs.SOC_VERSION
 
     soc_to_device = {
         "910b": "A2",
@@ -160,13 +162,12 @@ def gen_build_info():
         "ascend310p3vir02": "_310P",
         "ascend310p3vir04": "_310P",
         "ascend310p3vir08": "_310P",
-        "ascend910_9579": "A5",
-        "ascend910_9599": "A5",
-        "ascend910_958b": "A5",
     }
-
-    assert soc_version in soc_to_device, f"Undefined soc_version: {soc_version}. Please file an issue to vllm-ascend."
-    device_type = soc_to_device[soc_version]
+    if "ascend950" in soc_version :
+        device_type = "A5"
+    else :
+        assert soc_version in soc_to_device, f"Undefined soc_version: {soc_version}. Please file an issue to vllm-ascend."
+        device_type = soc_to_device[soc_version]
 
     package_dir = os.path.join(ROOT_DIR, "vllm_ascend", "_build_info.py")
     with open(package_dir, "w+") as f:
