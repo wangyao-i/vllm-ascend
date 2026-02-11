@@ -3,13 +3,27 @@ import torch_npu
 
 
 class QuantTypeMapping:
-    quant_configs = {"W8A8_MXFP8": {"act_quant_type": torch.float8_e4m3fn, "weight_quant_type": None, \
-                                    "scale_dtype": torch_npu.float8_e8m0fnu, "per_token_scale_dtype": torch_npu.float8_e8m0fnu},
-                     "W4A4_MXFP4": {"act_quant_type": torch_npu.float4_e2m1fn_x2, "weight_quant_type": torch_npu.float4_e2m1fn_x2, \
-                                    "scale_dtype": torch_npu.float8_e8m0fnu, "per_token_scale_dtype": torch_npu.float8_e8m0fnu},
-                     "W4A8_MXFP": {"act_quant_type": torch.float8_e4m3fn, "weight_quant_type": torch_npu.float4_e2m1fn_x2, \
-                                   "scale_dtype": torch_npu.float8_e8m0fnu, "per_token_scale_dtype": torch_npu.float8_e8m0fnu}}
-
+    class QuantTypeMapping:
+    quant_configs = {
+        "W8A8_MXFP8": {
+            "act_quant_type": torch.float8_e4m3fn,
+            "weight_quant_type": None,
+            "scale_dtype": torch_npu.float8_e8m0fnu,
+            "per_token_scale_dtype": torch_npu.float8_e8m0fnu,
+        },
+        "W4A4_MXFP4": {
+            "act_quant_type": torch_npu.float4_e2m1fn_x2,
+            "weight_quant_type": torch_npu.float4_e2m1fn_x2,
+            "scale_dtype": torch_npu.float8_e8m0fnu,
+            "per_token_scale_dtype": torch_npu.float8_e8m0fnu,
+        },
+        "W4A8_MXFP": {
+            "act_quant_type": torch.float8_e4m3fn,
+            "weight_quant_type": torch_npu.float4_e2m1fn_x2,
+            "scale_dtype": torch_npu.float8_e8m0fnu,
+            "per_token_scale_dtype": torch_npu.float8_e8m0fnu,
+        },
+    }
 
     @staticmethod
     def get_quant_settings():
