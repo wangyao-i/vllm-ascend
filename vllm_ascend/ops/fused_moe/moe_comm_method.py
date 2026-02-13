@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
 
 import torch
 from vllm.forward_context import get_forward_context
@@ -26,20 +26,26 @@ import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.ops.fused_moe.moe_mlp import unified_apply_mlp
 from vllm_ascend.ops.fused_moe.prepare_finalize import (
-    PrepareAndFinalizeWithAll2All, PrepareAndFinalizeWithAllGather,
-    PrepareAndFinalizeWithMC2, QuantType)
+    PrepareAndFinalize,
+    PrepareAndFinalizeWithAll2All,
+    PrepareAndFinalizeWithAllGather,
+    PrepareAndFinalizeWithMC2,
+)
 from vllm_ascend.ops.fused_moe.token_dispatcher import (
-    TokenDispatcherWithAll2AllV, TokenDispatcherWithAllGather,
-    TokenDispatcherWithMC2)
+    MoETokenDispatcher,
+    TokenDispatcherWithAll2AllV,
+    TokenDispatcherWithAllGather,
+    TokenDispatcherWithMC2,
+)
+from vllm_ascend.quantization.methods.base import QuantType
 
 from vllm_ascend.quantization.quant_parser import parse_a5_quant_params
 
 _MoECommMethods: Dict[Optional[MoECommType], MoECommMethod] = {}
 
 
-def get_moe_comm_method(
-        moe_comm_type: Optional[MoECommType]) -> Optional[MoECommMethod]:
-    return _MoECommMethods.get(moe_comm_type, None)
+def get_moe_comm_method(moe_comm_type: MoECommType | None) -> MoECommMethod | None:
+    return _MoECommMethods.get(moe_comm_type)
 
 
 def setup_moe_comm_method(moe_config):
@@ -47,6 +53,26 @@ def setup_moe_comm_method(moe_config):
     _MoECommMethods[MoECommType.ALLGATHER] = AllGatherCommImpl(moe_config)
     _MoECommMethods[MoECommType.MC2] = MC2CommImpl(moe_config)
     _MoECommMethods[MoECommType.FUSED_MC2] = FusedMC2CommImpl(moe_config)
+
+
+def set_gmmswigluquant_method():
+    from vllm_ascend.ascend_config import get_ascend_config
+
+    ascend_config = get_ascend_config()
+    return ascend_config.ascend_fusion_config.fusion_ops_gmmswigluquant
+
+
+@dataclass
+class FusedExpertsResult:
+    routed_out: torch.Tensor
+    # This field is for shared experts and should be set by the MoE
+    # communication method that supports shared experts in parallel with routed
+    # experts.
+    before_dispatch_evt: torch.npu.Event | None = None
+    before_combine_evt: torch.npu.Event | None = None
+    # For dynamic_eplb
+    group_list_type: int | None = None
+    expert_tokens: torch.Tensor | None = None
 
 
 class MoECommMethod(ABC):
@@ -57,6 +83,7 @@ class MoECommMethod(ABC):
 
         self.token_dispatcher = self._get_token_dispatcher()
         self.prepare_finalize = self._get_prepare_finalize()
+        self.use_fusion_ops = set_gmmswigluquant_method()
 
     def prepare(
         self,
@@ -65,20 +92,16 @@ class MoECommMethod(ABC):
         enable_shared_expert_dp: bool = False,
         replace_allreduce: bool = False,
         quant_type: QuantType = QuantType.NONE,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor],
-               Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         hidden_states, router_logits, mc2_mask, context_metadata = self.prepare_finalize.prepare(
-            hidden_states, router_logits, enable_shared_expert_dp,
-            replace_allreduce, quant_type)
+            hidden_states, router_logits, enable_shared_expert_dp, replace_allreduce, quant_type
+        )
         return hidden_states, router_logits, mc2_mask, context_metadata
 
-    def finalize(self,
-                 hidden_states: torch.Tensor,
-                 reduce_results: bool,
-                 context_metadata: Optional[dict] = None) -> torch.Tensor:
-        hidden_states = self.prepare_finalize.finalize(hidden_states,
-                                                       reduce_results,
-                                                       context_metadata)
+    def finalize(
+        self, hidden_states: torch.Tensor, reduce_results: bool, context_metadata: dict | None = None
+    ) -> torch.Tensor:
+        hidden_states = self.prepare_finalize.finalize(hidden_states, reduce_results, context_metadata)
         return hidden_states
 
     def fused_experts(
@@ -114,9 +137,7 @@ class MoECommMethod(ABC):
             pertoken_scale: Optional[torch.Tensor] = None,
             **kwargs):
         # Check constraints
-        assert hidden_states.dtype in [
-            torch.float32, torch.float16, torch.bfloat16, torch.int8
-        ]
+        assert hidden_states.dtype in [torch.float32, torch.float16, torch.bfloat16, torch.int8]
 
         moe_comm_method = get_forward_context().moe_comm_method
         assert moe_comm_method is not None, "Missing communication context"
@@ -201,14 +222,12 @@ class MoECommMethod(ABC):
         return final_hidden_states
 
     @abstractmethod
-    def _get_token_dispatcher(self):
-        raise NotImplementedError(
-            "_get_token_dispatcher function not implemented.")
+    def _get_token_dispatcher(self) -> MoETokenDispatcher:
+        raise NotImplementedError("_get_token_dispatcher function not implemented.")
 
     @abstractmethod
-    def _get_prepare_finalize(self):
-        raise NotImplementedError(
-            "_get_prepare_finalize function not implemented.")
+    def _get_prepare_finalize(self) -> PrepareAndFinalize:
+        raise NotImplementedError("_get_prepare_finalize function not implemented.")
 
 
 class AllGatherCommImpl(MoECommMethod):
@@ -234,7 +253,8 @@ class AllGatherCommImpl(MoECommMethod):
         return TokenDispatcherWithAllGather(
             top_k=self.moe_config.experts_per_token,
             num_experts=self.moe_config.num_experts,
-            num_local_experts=self.moe_config.num_local_experts)
+            num_local_experts=self.moe_config.num_local_experts,
+        )
 
     def _get_prepare_finalize(self):
         return PrepareAndFinalizeWithAllGather(self.moe_config)
@@ -245,7 +265,7 @@ class MC2CommImpl(MoECommMethod):
     1. `enable_expert_parallel=True`.
     2. `npu_moe_distribute_dispatch` and `npu_moe_distribute_combine` are available.
     3. `enable_expert_parallel=False` is not supported.
-    
+
     This implementation uses the MC2 communication method, which is optimized for
     Communication and Computation parallelism on Ascend devices.
     """
@@ -271,7 +291,8 @@ class AlltoAllCommImpl(MoECommMethod):
         return TokenDispatcherWithAll2AllV(
             top_k=self.moe_config.experts_per_token,
             num_experts=self.moe_config.num_experts,
-            num_local_experts=self.moe_config.num_local_experts)
+            num_local_experts=self.moe_config.num_local_experts,
+        )
 
     def _get_prepare_finalize(self):
         return PrepareAndFinalizeWithAll2All(self.moe_config)
@@ -282,7 +303,7 @@ class FusedMC2CommImpl(MoECommMethod):
     1. `enable_expert_parallel=True`.
     2. `npu_moe_distribute_dispatch` and `npu_moe_distribute_combine` are available.
     3. `enable_expert_parallel=False` is not supported.
-    
+
     This implementation uses the MC2 communication method, which is optimized for
     Communication and Computation parallelism on Ascend devices.
     """
@@ -294,71 +315,80 @@ class FusedMC2CommImpl(MoECommMethod):
         return PrepareAndFinalizeWithMC2(self.moe_config)
 
     def fused_experts(
-            self,
-            hidden_states: torch.Tensor,
-            w1: torch.Tensor | list[torch.Tensor],
-            w2: torch.Tensor | list[torch.Tensor],
-            topk_weights: torch.Tensor,
-            topk_ids: torch.Tensor,
-            activation: str = "silu",
-            apply_router_weight_on_input: bool = False,
-            use_int8_w8a8: bool = False,
-            use_int4_w4a8: bool = False,
-            use_int4_w4a16: bool = False,
-            global_num_experts: Optional[int] = None,
-            expert_map: Optional[torch.Tensor] = None,
-            w1_scale: Optional[list[torch.Tensor]] = None,
-            w2_scale: Optional[list[torch.Tensor]] = None,
-            w1_scale_bias: torch.Tensor = None,
-            w2_scale_bias: torch.Tensor = None,
-            w1_offset: Optional[torch.Tensor] = None,
-            w2_offset: Optional[torch.Tensor] = None,
-            # For Cube/Vector parallel
-            shared_experts: Optional[Any] = None,
-            quantized_x_for_share: Optional[Any] = None,
-            dynamic_scale_for_share: Optional[Any] = None,
-            # For load balance
-            log2phy: torch.Tensor = None,
-            global_redundant_expert_num: int = 0,
-            need_trans: bool = False,
-            dynamic_eplb: bool = False,
-            mc2_mask: torch.Tensor = None,
-            pertoken_scale: Optional[torch.Tensor] = None):
-        assert not (
-            w1_scale is None or w2_scale is None
-        ), "w1_scale and w2_scale cannot be None for FusedMC2CommImpl."
+        self,
+        hidden_states: torch.Tensor,
+        w1: torch.Tensor | list[torch.Tensor],
+        w2: torch.Tensor | list[torch.Tensor],
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+        activation: str = "silu",
+        w1_bias: torch.Tensor = None,
+        w2_bias: torch.Tensor = None,
+        apply_router_weight_on_input: bool = False,
+        use_int8_w8a8: bool = False,
+        use_int4_w4a8: bool = False,
+        use_int4_w4a16: bool = False,
+        expert_map: torch.Tensor | None = None,
+        w1_scale: list[torch.Tensor] | None = None,
+        w2_scale: list[torch.Tensor] | None = None,
+        w1_scale_bias: torch.Tensor = None,
+        w2_scale_bias: torch.Tensor = None,
+        w1_offset: torch.Tensor | None = None,
+        w2_offset: torch.Tensor | None = None,
+        # For load balance
+        log2phy: torch.Tensor = None,
+        need_trans: bool = False,
+        dynamic_eplb: bool = False,
+        mc2_mask: torch.Tensor = None,
+        pertoken_scale: torch.Tensor | None = None,
+    ):
+        assert not (w1_scale is None or w2_scale is None), "w1_scale and w2_scale cannot be None for FusedMC2CommImpl."
 
+        assert isinstance(self.token_dispatcher, TokenDispatcherWithMC2), (
+            "token_dispatcher must be an instance of TokenDispatcherWithMC2."
+        )
+
+        # Apply log2phy if needed
+        if log2phy is not None:
+            topk_ids = log2phy[topk_ids]
+
+        group_list_type = None
+        expert_tokens = None
         if envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2 == 1:
             out = torch.empty_like(hidden_states)
-            torch.ops._C_ascend.dispatch_ffn_combine(
+            expert_token_nums = torch.zeros([self.moe_config.num_local_experts], dtype=torch.int32)
+            torch.ops._C_ascend.dispatch_ffn_combine(  # type: ignore
                 x=hidden_states,
-                weight1=w1[0],
-                weight2=w2[0],
+                weight1=w1,
+                weight2=w2,
                 expert_idx=topk_ids,
-                scale1=w1_scale[0],
-                scale2=w2_scale[0],
+                scale1=w1_scale,
+                scale2=w2_scale,
                 probs=topk_weights.to(torch.float32),
                 group=self.token_dispatcher.moe_all_to_all_group_name,
                 max_output_size=65536,
                 out=out,
+                expert_token_nums=expert_token_nums,
             )
+            expert_tokens = expert_token_nums
         elif envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2 == 2:
             assert expert_map is not None, "expert_map cannot be None."
-            out, _ = torch.ops._C_ascend.dispatch_gmm_combine_decode(
+            group_list_type = 1
+            out, expert_tokens = torch.ops._C_ascend.dispatch_gmm_combine_decode(  # type: ignore
                 x=hidden_states,
                 expert_ids=topk_ids,
-                gmm1_permuted_weight=w1[0],
-                gmm1_permuted_weight_scale=w1_scale[0],
-                gmm2_weight=w2[0],
-                gmm2_weight_scale=w2_scale[0],
+                gmm1_permuted_weight=w1,
+                gmm1_permuted_weight_scale=w1_scale,
+                gmm2_weight=w2,
+                gmm2_weight_scale=w2_scale,
                 expert_smooth_scales=None,
                 expert_scales=topk_weights.to(torch.float32),
                 group_ep=self.token_dispatcher.moe_all_to_all_group_name,
                 ep_rank_size=self.token_dispatcher.ep_world_size,
                 ep_rank_id=self.token_dispatcher.ep_rank_id,
-                moe_expert_num=len(expert_map),
-                global_bs=self.token_dispatcher.fused_global_bs)
+                moe_expert_num=self.moe_config.num_experts,
+                global_bs=self.token_dispatcher.global_bs,
+            )
         else:
-            raise ValueError(
-                f"Wrong value of {envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2=}")
-        return out
+            raise ValueError(f"Wrong value of {envs_ascend.VLLM_ASCEND_ENABLE_FUSED_MC2=}")
+        return FusedExpertsResult(routed_out=out, group_list_type=group_list_type, expert_tokens=expert_tokens)

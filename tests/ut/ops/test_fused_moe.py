@@ -20,8 +20,6 @@ import torch
 import torch.nn as nn
 import torch_npu
 from pytest_mock import MockerFixture
-from vllm.model_executor.layers.fused_moe import FusedMoEMethodBase
-
 from tests.ut.base import TestBase
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.ops.fused_moe.experts_selector import select_experts
@@ -233,25 +231,6 @@ class MockQuantMethod(nn.Module):
             self.apply = MagicMock(return_value=(torch.randn(num_tokens, 32)))
 
 
-class MockFusedMoEMethod(FusedMoEMethodBase):
-    moe = MagicMock()
-
-    def __init__(self):
-        super().__init__(self.moe)
-
-    def create_weights(self, layer: torch.nn.Module, num_experts: int,
-                       hidden_size: int, intermediate_size_per_partition: int,
-                       params_dtype: torch.dtype, **extra_weight_attrs):
-        pass
-
-    def apply(self, hidden_states: torch.Tensor,
-              expert_weights: torch.Tensor) -> torch.Tensor:
-        pass
-
-    def get_fused_moe_quant_config(self, layer: torch.nn.Module):
-        pass
-
-
 class TestExpertsSelector:
 
     @pytest.mark.parametrize("global_num_experts", [256, 128])
@@ -317,6 +296,8 @@ class TestCumsumGroupList(TestBase):
 
 class TestUnifiedApplyMLP(TestBase):
 
+    @patch('vllm_ascend.ops.fused_moe.moe_mlp.get_weight_prefetch_method',
+           return_value=MagicMock())
     @patch('vllm_ascend.ops.fused_moe.moe_mlp.get_forward_context')
     @patch('vllm_ascend.utils.get_ascend_device_type',
            return_value=AscendDeviceType.A3)
@@ -327,7 +308,8 @@ class TestUnifiedApplyMLP(TestBase):
                                                      mock_npu_dynamic_quant,
                                                      mock_npu_grouped_matmul,
                                                      mock_soc_version,
-                                                     mock_get_forward_context):
+                                                     mock_get_forward_context,
+                                                     mock_get_weight_prefetch_method):
 
         mock_forward_context = MagicMock()
         mock_forward_context.moe_comm_type = MoECommType.MC2
@@ -423,13 +405,16 @@ class TestUnifiedApplyMLP(TestBase):
         self.assertEqual(result.dtype, torch.float16)
 
     @patch('vllm_ascend.ops.fused_moe.moe_mlp.HAS_TRITON', False)
+    @patch('vllm_ascend.ops.fused_moe.moe_mlp.get_weight_prefetch_method',
+           return_value=MagicMock())
     @patch('vllm_ascend.ops.fused_moe.moe_mlp.get_forward_context')
     @patch('torch_npu.npu_grouped_matmul')
     @patch('torch_npu.npu_swiglu')
     @patch('torch_npu.npu_dynamic_quant')
     def test_unified_apply_mlp_with_quantization_and_dynamic_scale(
             self, mock_npu_dynamic_quant, mock_npu_swiglu,
-            mock_npu_grouped_matmul, mock_get_forward_context):
+            mock_npu_grouped_matmul, mock_get_forward_context,
+            mock_get_weight_prefetch_method):
 
         mock_forward_context = MagicMock()
         mock_forward_context.with_quant = True
@@ -526,6 +511,8 @@ class TestUnifiedApplyMLP(TestBase):
         self.assertEqual(result.shape, hidden_states.shape)
         self.assertEqual(result.dtype, torch.float16)
 
+    @patch("vllm_ascend.ops.fused_moe.moe_mlp.get_weight_prefetch_method",
+           return_value=MagicMock())
     @patch("vllm_ascend.ops.fused_moe.moe_mlp.get_forward_context")
     @patch("torch_npu.npu_grouped_matmul")
     @patch("torch_npu.npu_swiglu")
@@ -534,7 +521,8 @@ class TestUnifiedApplyMLP(TestBase):
     def test_unified_apply_mlp_with_quantization_and_fusion_mlp(
             self, mock_npu_dynamic_quant, mock_npu_grouped_matmul_swiglu_quant,
             mock_npu_swiglu, mock_npu_grouped_matmul,
-            mock_get_forward_context):
+            mock_get_forward_context,
+            mock_get_weight_prefetch_method):
 
         mock_forward_context = MagicMock()
         mock_forward_context.with_quant = True

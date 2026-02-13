@@ -22,5 +22,4 @@ enum struct AscendType {
     BF16 = 1,
     FP32 = 2,
 };
-#define pipe_barrier(pipe) AscendC::PipeBarrier<pipe>()
 }

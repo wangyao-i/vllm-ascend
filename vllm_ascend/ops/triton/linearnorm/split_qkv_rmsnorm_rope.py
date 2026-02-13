@@ -14,7 +14,6 @@
 # limitations under the License.
 # This file is a part of the vllm-ascend project.
 #
-from typing import Optional
 
 import torch
 import triton  # type: ignore
@@ -27,8 +26,8 @@ import triton.language.extra.cann.extension as extension
 @triton.jit
 def split_qkv_rmsnorm_rope_kernel(
     input_ptr,
-    sin_ptr,
-    cos_ptr,
+    cos_sin_ptr,
+    pos_ptr,
     q_ptr,
     k_ptr,
     v_ptr,
@@ -61,22 +60,19 @@ def split_qkv_rmsnorm_rope_kernel(
     for row_idx in tl.range(row_pid, batch_size, row_step):
         col_indices = col_pid * Q_BLOCK_SIZE + tl.arange(0, Q_BLOCK_SIZE)
         valid_mask = col_indices < q_hidden_size
-        input_values = (tl.load(input_ptr + input_offset + col_indices,
-                                mask=valid_mask,
-                                other=0.0).to(tl.float32).reshape(
-                                    Q_BLOCK_SIZE // HEAD_DIM, HEAD_DIM))
+        input_values = (
+            tl.load(input_ptr + input_offset + col_indices, mask=valid_mask, other=0.0)
+            .to(tl.float32)
+            .reshape(Q_BLOCK_SIZE // HEAD_DIM, HEAD_DIM)
+        )
         squares = input_values * input_values
         variances = tl.sum(squares, axis=1) / HEAD_DIM
-        reciprocal_std = (1 / tl.sqrt(variances + eps)).reshape(
-            Q_BLOCK_SIZE // HEAD_DIM, 1)
-        normalized_values = (input_values * reciprocal_std
-                             )  # (Q_BLOCK_SIZE//HEAD_DIM, HEAD_DIM)
+        reciprocal_std = (1 / tl.sqrt(variances + eps)).reshape(Q_BLOCK_SIZE // HEAD_DIM, 1)
+        normalized_values = input_values * reciprocal_std  # (Q_BLOCK_SIZE//HEAD_DIM, HEAD_DIM)
         if BIAS:
-            normalized_values = (normalized_values * weight_values +
-                                 bias_values).to(tl.bfloat16)
+            normalized_values = (normalized_values * weight_values + bias_values).to(tl.bfloat16)
         else:
-            normalized_values = (normalized_values * weight_values).to(
-                tl.bfloat16)
+            normalized_values = (normalized_values * weight_values).to(tl.bfloat16)
 
         sc_offsets = row_idx * HEAD_DIM + tl.arange(0, HEAD_DIM)
         sin = (tl.load(sin_ptr + sc_offsets)).reshape(1, HEAD_DIM)
@@ -109,7 +105,6 @@ def split_qkv_rmsnorm_rope_kernel(
             sizes=(Q_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        roped_q = cat_x * sin + normalized_values * cos
         tl.store(
             q_ptr + output_offset + col_indices,
             roped_q.reshape(Q_BLOCK_SIZE).to(q_ptr.dtype.element_ty),
@@ -127,19 +122,17 @@ def split_qkv_rmsnorm_rope_kernel(
     for row_idx in tl.range(row_pid, batch_size, row_step):
         col_indices = col_pid * KV_BLOCK_SIZE + tl.arange(0, KV_BLOCK_SIZE)
         valid_mask = col_indices < kv_hidden_size
-        input_values = (tl.load(input_ptr + input_offset + col_indices,
-                                mask=valid_mask,
-                                other=0.0).to(tl.float32).reshape(
-                                    KV_BLOCK_SIZE // HEAD_DIM, HEAD_DIM))
+        input_values = (
+            tl.load(input_ptr + input_offset + col_indices, mask=valid_mask, other=0.0)
+            .to(tl.float32)
+            .reshape(KV_BLOCK_SIZE // HEAD_DIM, HEAD_DIM)
+        )
         squares = input_values * input_values
         variances = tl.sum(squares, axis=1) / HEAD_DIM
-        reciprocal_std = (1 / tl.sqrt(variances + eps)).reshape(
-            KV_BLOCK_SIZE // HEAD_DIM, 1)
-        normalized_values = (input_values * reciprocal_std
-                             )  # (KV_BLOCK_SIZE/HEAD_DIM, HEAD_DIM)
+        reciprocal_std = (1 / tl.sqrt(variances + eps)).reshape(KV_BLOCK_SIZE // HEAD_DIM, 1)
+        normalized_values = input_values * reciprocal_std  # (KV_BLOCK_SIZE/HEAD_DIM, HEAD_DIM)
         if BIAS:
-            normalized_values = (normalized_values * weight_values +
-                                 bias_values).to(tl.bfloat16)
+            normalized_values = (normalized_values * weight_values + bias_values).to(tl.bfloat16)
         else:
             normalized_values = (normalized_values * weight_values).to(
                 tl.bfloat16)
@@ -174,8 +167,6 @@ def split_qkv_rmsnorm_rope_kernel(
             sizes=(KV_BLOCK_SIZE // HEAD_DIM, HALF_HEAD_DIM),
             strides=(1, 1),
         )
-        roped_k = cat_x * sin + normalized_values * cos
-
         tl.store(
             k_ptr + output_offset + col_indices,
             roped_k.to(tl.bfloat16).reshape(KV_BLOCK_SIZE),
@@ -189,47 +180,34 @@ def split_qkv_rmsnorm_rope_kernel(
     for _ in tl.range(row_pid, batch_size, row_step):
         col_indices = col_pid * KV_BLOCK_SIZE + tl.arange(0, KV_BLOCK_SIZE)
         valid_mask = col_indices < kv_hidden_size
-        input_values = tl.load(input_ptr + input_offset + col_indices,
-                               mask=valid_mask,
-                               other=0.0)
-        tl.store(v_ptr + output_offset + col_indices,
-                 input_values,
-                 mask=valid_mask)
+        input_values = tl.load(input_ptr + input_offset + col_indices, mask=valid_mask, other=0.0)
+        tl.store(v_ptr + output_offset + col_indices, input_values, mask=valid_mask)
         input_offset += input_offset_step
         output_offset += output_offset_step
 
 
 def split_qkv_rmsnorm_rope_impl(
     input: torch.Tensor,
-    sin: torch.Tensor,
-    cos: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
     q_weight: torch.Tensor,
     k_weight: torch.Tensor,
     q_hidden_size: int,
     kv_hidden_size: int,
     head_dim: int,
     eps: float,
-    q_bias: Optional[torch.Tensor],
-    k_bias: Optional[torch.Tensor],
+    q_bias: torch.Tensor | None = None,
+    k_bias: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     KV_BLOCK_SIZE = triton.next_power_of_2(head_dim)
-    assert KV_BLOCK_SIZE == head_dim
+    assert head_dim == KV_BLOCK_SIZE
     assert q_hidden_size % kv_hidden_size == 0
     Q_BLOCK_SIZE = q_hidden_size // kv_hidden_size * head_dim
     batch_size = input.shape[0]
     total_hidden_size = q_hidden_size + kv_hidden_size * 2
-    q_output = torch.empty(batch_size,
-                           q_hidden_size,
-                           device=input.device,
-                           dtype=input.dtype)
-    k_output = torch.empty(batch_size,
-                           kv_hidden_size,
-                           device=input.device,
-                           dtype=input.dtype)
-    v_output = torch.empty(batch_size,
-                           kv_hidden_size,
-                           device=input.device,
-                           dtype=input.dtype)
+    q_output = torch.empty(batch_size, q_hidden_size, device=input.device, dtype=input.dtype)
+    k_output = torch.empty(batch_size, kv_hidden_size, device=input.device, dtype=input.dtype)
+    v_output = torch.empty(batch_size, kv_hidden_size, device=input.device, dtype=input.dtype)
     n_cols = kv_hidden_size // KV_BLOCK_SIZE
     num_vectorcore = get_vectorcore_num()
     assert num_vectorcore % n_cols == 0
@@ -238,8 +216,8 @@ def split_qkv_rmsnorm_rope_impl(
 
     split_qkv_rmsnorm_rope_kernel[(n_rows, n_cols, 1)](
         input,
-        sin,
-        cos,
+        cos_sin_cache,
+        positions,
         q_output,
         k_output,
         v_output,
@@ -263,16 +241,16 @@ def split_qkv_rmsnorm_rope_impl(
 
 def split_qkv_rmsnorm_rope_impl_fake(
     input: torch.Tensor,
-    sin: torch.Tensor,
-    cos: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    positions: torch.Tensor,
     q_weight: torch.Tensor,
     k_weight: torch.Tensor,
     q_hidden_size: int,
     kv_hidden_size: int,
     head_dim: int,
     eps: float,
-    q_bias: Optional[torch.Tensor] = None,
-    k_bias: Optional[torch.Tensor] = None,
+    q_bias: torch.Tensor | None = None,
+    k_bias: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # Fake implementation for shape inference during Dynamo/AOT tracing.
     # Note: sin and cos are not used in shape computation, but must be present in signature.
@@ -298,8 +276,10 @@ def split_qkv_rmsnorm_rope_impl_fake(
     return q_output, k_output, v_output
 
 
-direct_register_custom_op(op_name="qkv_rmsnorm_rope",
-                          op_func=split_qkv_rmsnorm_rope_impl,
-                          fake_impl=split_qkv_rmsnorm_rope_impl_fake,
-                          mutates_args=[],
-                          dispatch_key="PrivateUse1")
+direct_register_custom_op(
+    op_name="qkv_rmsnorm_rope",
+    op_func=split_qkv_rmsnorm_rope_impl,
+    fake_impl=split_qkv_rmsnorm_rope_impl_fake,
+    mutates_args=[],
+    dispatch_key="PrivateUse1",
+)

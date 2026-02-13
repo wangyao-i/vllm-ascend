@@ -21,6 +21,7 @@ on:
     branches:
       - 'main'
       - '*-dev'
+      - 'releases/v*'
     types: [ labeled, synchronize ]
 
 # Bash shells do not use ~/.profile or ~/.bashrc so these shells need to be explicitly
@@ -38,7 +39,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: linux-aarch64-a2-0
+    runs-on: linux-aarch64-a2b3-0
     if: ${{ contains(github.event.pull_request.labels.*.name, 'ready') && contains(github.event.pull_request.labels.*.name, 'ready-for-test') }}
     outputs:
       e2e_tracker: ${{ steps.filter.outputs.e2e_tracker }}
@@ -74,12 +75,12 @@ jobs:
     name: e2e-full
     strategy:
       matrix:
-        vllm_version: [5326c89803566a131c928f7fdd2100b75c981a42, v0.13.0]
+        vllm_version: [9562912cead1f11e8540fb91306c5cbda66f0007, v0.15.0]
     needs: [changes]
-    if: ${{ needs.changes.outputs.e2e_tracker == 'true' }}
+    if: ${{ needs.changes.outputs.e2e_tracker == 'true' || needs.changes.outputs.e2e_tracker == true }}
     uses: ./.github/workflows/_e2e_test.yaml
     with:
       vllm: ${{ matrix.vllm_version }}
-      runner: linux-aarch64-a2
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.3.rc2-910b-ubuntu22.04-py3.11
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:8.5.0-910b-ubuntu22.04-py3.11
+      contains_310: false
       type: full
