@@ -9,12 +9,25 @@ RED="\033[0;31m"
 NC="\033[0m" # No Color
 
 # Configuration
-LOG_DIR="/root/.cache/tests/logs"
-OVERWRITE_LOGS=true
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+# cann and atb environment setup
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann-8.5.0/share/info/ascendnpu-ir/bin/set_env.sh
+
+set +eu
+source /usr/local/Ascend/nnal/atb/set_env.sh
+set -eu
+
+# Home path for aisbench
 export BENCHMARK_HOME=${WORKSPACE}/vllm-ascend/benchmark
+
+# Logging configurations
 export VLLM_LOGGING_LEVEL="INFO"
-export TRANSFORMERS_OFFLINE="1"
+# Reduce glog verbosity for mooncake
+export GLOG_minloglevel=1
+# Set transformers to offline mode to avoid downloading models during tests
+export HF_HUB_OFFLINE="1"
 
 # Function to print section headers
 print_section() {
@@ -22,7 +35,7 @@ print_section() {
 }
 
 print_failure() {
-    echo -e "${RED}${FAIL_TAG} ✗ ERROR: $1${NC}"
+    echo -e "${RED}${FAIL_TAG:-test_failed} ✗ ERROR: $1${NC}"
     exit 1
 }
 
@@ -121,6 +134,14 @@ install_extra_components() {
     echo "====> Extra components installation completed"
 }
 
+
+show_triton_ascend_info() {
+    echo "====> Check triton ascend info"
+    clang -v
+    which bishengir-compile
+    pip show triton-ascend
+}
+
 kill_npu_processes() {
   pgrep python3 | xargs -r kill -9
   pgrep VLLM | xargs -r kill -9
@@ -131,15 +152,15 @@ kill_npu_processes() {
 run_tests_with_log() {
     set +e
     kill_npu_processes
-    pytest -sv --show-capture=no tests/e2e/nightly/multi_node/test_multi_node.py
+    pytest -sv --show-capture=no tests/e2e/nightly/multi_node/scripts/test_multi_node.py
     ret=$?
     set -e
     if [ "$LWS_WORKER_INDEX" -eq 0 ]; then
         if [ $ret -eq 0 ]; then
             print_success "All tests passed!"
         else
-            print_failure "Some tests failed, please check the error stack above for details.\
-            If this is insufficient to pinpoint the error, please download and review the logs of all other nodes from the job's summary."
+            print_failure "Some tests failed, please check the error stack above for details. \
+If this is insufficient to pinpoint the error, please download and review the logs of all other nodes from the job's summary."
         fi
     fi
 }
@@ -148,6 +169,7 @@ main() {
     check_npu_info
     check_and_config
     show_vllm_info
+    show_triton_ascend_info
     if [[ "$CONFIG_YAML_PATH" == *"DeepSeek-V3_2-Exp-bf16.yaml" ]]; then
         install_extra_components
     fi

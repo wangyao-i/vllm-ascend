@@ -17,18 +17,15 @@
 # Todo: Once https://github.com/vllm-project/vllm/issues/22246 is merged in vllm. Remove eplb utils.
 import json
 import os.path
-import sys
 from collections import defaultdict
 
 import numpy as np
 import torch
 from vllm.logger import logger
 
-import vllm_ascend.envs as envs_ascend
-
 
 def expert_file_to_tensor(expert_map_path, layer_id):
-    with open(expert_map_path, "r") as f:
+    with open(expert_map_path) as f:
         data = json.load(f)
     physical_count = 0
     device_data = []
@@ -71,13 +68,13 @@ def generate_global_placement(n_expert, ep_size, n_redundant):
     return torch.tensor(groups, dtype=torch.int32)
 
 
-def init_eplb_config(ascend_config, layer_id, moe_config):
-    expert_map_path = ascend_config.expert_map_path
+def init_eplb_config(eplb_config, layer_id, moe_config):
+    expert_map_path = eplb_config.expert_map_path
     n_experts = moe_config.num_experts
     ep_size = moe_config.ep_size
     global_placement = None
-    eplb_enable = ascend_config.dynamic_eplb or ascend_config.expert_map_record_path
-    n_redundant = ascend_config.init_redundancy_expert if eplb_enable else 0
+    eplb_enable = eplb_config.dynamic_eplb
+    n_redundant = eplb_config.num_redundant_experts if eplb_enable else 0
     if expert_map_path:
         EPLBParamUtils.check_expert_map_path(expert_map_path)
         eplb_enable = True
@@ -93,23 +90,22 @@ def init_eplb_config(ascend_config, layer_id, moe_config):
             eplb_enable = False
 
     if global_placement is None:
-        global_placement = generate_global_placement(n_experts, ep_size,
-                                                     n_redundant)
+        global_placement = generate_global_placement(n_experts, ep_size, n_redundant)
 
     if ep_size == 1:
-        return None, None, n_redundant
+        assert not eplb_enable, "EPLB must used in expert parallelism."
+        return None, None, None, n_redundant
     global_expert_map = []
     for rankid in range(ep_size):
-        expert_map = torch.full((n_experts, ), -1, dtype=torch.int32)
+        expert_map = torch.full((n_experts,), -1, dtype=torch.int32)
         local_placement = global_placement[rankid]
-        expert_map[local_placement] = torch.arange(local_placement.shape[0],
-                                                   dtype=torch.int32)
+        expert_map[local_placement] = torch.arange(local_placement.shape[0], dtype=torch.int32)
         global_expert_map.append(expert_map)
-    local_expert_map = global_expert_map[moe_config.ep_rank].npu()
-    log2phy = generate_log2phy_map(
-        global_expert_map, moe_config.ep_rank).npu() if eplb_enable else None
+        if rankid == moe_config.ep_rank:
+            local_expert_map = expert_map.npu()
+    log2phy = generate_log2phy_map(global_expert_map, moe_config.ep_rank).npu() if eplb_enable else None
 
-    return local_expert_map, log2phy, n_redundant
+    return torch.stack(global_expert_map), local_expert_map, log2phy, n_redundant
 
 
 def validate_global_placement(global_placement, ep_size, n_experts):
@@ -130,18 +126,19 @@ def generate_log2phy_map(global_expert_map, ep_rank):
     for rankid, map_per_rank in enumerate(global_expert_map):
         for idx, val in enumerate(map_per_rank):
             val = val.item()
-            # 计算value：当前值 + i * 有效元素个数
             if val != -1:
                 log2phy_map[idx].append(val + rankid * valid_count)
 
-    for key in log2phy_map.keys():
+    for key in log2phy_map:
         num_of_duplications = len(log2phy_map[key])
         log2phy_map[key] = log2phy_map[key][ep_rank % num_of_duplications]
 
     log2phy_map = torch.scatter(
-        torch.zeros(len(log2phy_map.keys()), dtype=torch.int32), 0,
-        torch.tensor(list(log2phy_map.keys()), dtype=torch.int64),
-        torch.tensor(list(log2phy_map.values()), dtype=torch.int32))
+        torch.zeros(len(log2phy_map), dtype=torch.int32),
+        0,
+        torch.tensor(list(log2phy_map), dtype=torch.int64),
+        torch.tensor(list(log2phy_map.values()), dtype=torch.int32),
+    )
 
     return log2phy_map
 

@@ -7,7 +7,7 @@ Unified Cache Management (UCM) provides an external KV-cache storage layer desig
 ## Prerequisites
 
 * OS: Linux
-* A hardware with Ascend NPU. It’s usually the Atlas 800 A2 series.
+* Hardware with Ascend NPUs. It's usually the Atlas 800 A2 series.
 * **vLLM: main branch**
 * **vLLM Ascend: main branch**
 
@@ -17,7 +17,7 @@ Unified Cache Management (UCM) provides an external KV-cache storage layer desig
 
 ## Configure UCM for Prefix Caching
 
-Modify the UCM configuration file to specify which UCM connector to use and where KV blocks should be stored.  
+Modify the UCM configuration file to specify which UCM connector to use and where KV blocks should be stored.
 You may directly edit the example file at:
 
 `unified-cache-management/examples/ucm_config_example.yaml`
@@ -78,7 +78,7 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **⚠️ Make sure to replace `"/vllm-workspace/unified-cache-management/examples/ucm_config_example.yaml"` with your actual config file path.**
 
-If you see log as below:
+If you see the log below:
 
 ```bash
 INFO:     Started server process [1049932]
@@ -89,6 +89,7 @@ INFO:     Application startup complete.
 Congratulations, you have successfully started the vLLM server with UCM connector!
 
 ## Evaluating UCM Prefix Caching Performance
+
 After launching the vLLM server with `UCMConnector` enabled, the easiest way to observe the prefix caching effect is to run the built-in `vllm bench` CLI. Executing the following command **twice** in a separate terminal shows the improvement clearly.
 
 ```bash
@@ -109,32 +110,34 @@ vllm bench serve \
 ```
 
 ### After the first execution
+
 The `vllm bench` terminal prints the benchmark result:
 
-```
+```shell
 ---------------Time to First Token----------------
 Mean TTFT (ms):                           15323.87
 ```
 
 Inspecting the vLLM server logs reveals entries like:
 
-```
+```shell
 INFO ucm_connector.py:228: request_id: xxx, total_blocks_num: 125, hit hbm: 0, hit external: 0
 ```
 
 This indicates that for the first inference request, UCM did not hit any cached KV blocks. As a result, the full 16K-token prefill must be computed, leading to a relatively large TTFT.
 
 ### After the second execution
+
 Running the same benchmark again produces:
 
-```
+```shell
 ---------------Time to First Token----------------
 Mean TTFT (ms):                            1920.68
 ```
 
 The vLLM server logs now contain similar entries:
 
-```
+```shell
 INFO ucm_connector.py:228: request_id: xxx, total_blocks_num: 125, hit hbm: 0, hit external: 125
 ```
 

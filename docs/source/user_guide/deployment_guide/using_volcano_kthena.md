@@ -1,6 +1,6 @@
 # Using Volcano Kthena
 
-This guide shows how to run **prefill–decode (PD) disaggregation** on Huawei Ascend NPUs using **vLLM-Ascend**, with [**Kthena**](https://kthena.volcano.sh/) handling orchestration on Kubernetes. About vLLM support with kthena, please refer to [Deploy vLLM with Kthena](https://docs.vllm.ai/en/latest/deployment/integrations/kthena/).
+This guide shows how to run **prefill–decode (PD) disaggregation** on Huawei Ascend NPUs using **vLLM-Ascend**, with [**Kthena**](https://kthena.volcano.sh/) handling orchestration on Kubernetes. About vLLM support with Kthena, please refer to [Deploy vLLM with Kthena](https://docs.vllm.ai/en/latest/deployment/integrations/kthena/).
 
 ---
 
@@ -9,19 +9,19 @@ This guide shows how to run **prefill–decode (PD) disaggregation** on Huawei A
 Large language model inference naturally splits into two phases:
 
 - **Prefill**
-  - Processes input tokens and builds the key–value (KV) cache.
-  - Batch‑friendly, high throughput, well suited to parallel NPU execution.
+    - Processes input tokens and builds the key–value (KV) cache.
+    - Batch-friendly, high-throughput, well-suited to parallel NPU execution.
 - **Decode**
-  - Consumes the KV cache to generate output tokens.
-  - Latency‑sensitive, memory‑intensive, more sequential.
+    - Consumes the KV cache to generate output tokens.
+    - Latency-sensitive, memory-intensive, more sequential.
 
-From the client’s perspective, this still looks like a single Chat / Completions endpoint.
+From the client's perspective, this still looks like a single Chat / Completions endpoint.
 
 ---
 
 ## 2. Deploy on Kubernetes with Kthena
 
-[Kthena](https://kthena.volcano.sh/) is a Kubernetes-native LLM inference platform that transforms how organizations deploy and manage Large Language Models in production. Built with declarative model lifecycle management and intelligent request routing, it provides high performance and enterprise-grade scalability for LLM inference workloads. In this example, we use three key Custom Resource Definitions (CRDs):
+[Kthena](https://kthena.volcano.sh/) is a Kubernetes-native LLM inference platform that transforms how organizations deploy and manage Large Language Models in production. Built with declarative model lifecycle management and intelligent request routing, it provides high-performance and enterprise-grade scalability for LLM inference workloads. In this example, we use three key Custom Resource Definitions (CRDs):
 
 - `ModelServing` — defines the workloads (prefill and decode roles).
 - `ModelServer` — manages PD groupings and internal routing.
@@ -33,7 +33,7 @@ This section uses the `deepseek-ai/DeepSeek-V2-Lite` example, but you can swap i
 
 - Kubernetes cluster with Ascend NPU nodes:
 
-    The Resources corresponding to different NPU Drivers may vary slightly. For example:
+    The resources corresponding to different NPU Drivers may vary slightly. For example:
 
     - If using [MindCluster](https://gitee.com/ascend/mind-cluster#https://gitee.com/link?target=https%3A%2F%2Fgitcode.com%2FAscend%2Fmind-cluster), please use `huawei.com/Ascend310P` or `huawei.com/Ascend910`.
 
@@ -43,9 +43,9 @@ This section uses the `deepseek-ai/DeepSeek-V2-Lite` example, but you can swap i
 
 ### 2.2 Deploy Prefill-Decode Disaggregated DeepSeek-V2-Lite on Kubernetes
 
-A concrete example is provided in Kthena as https://github.com/volcano-sh/kthena/blob/main/examples/model-serving/prefill-decode-disaggregation.yaml
+A concrete example is provided in Kthena as <https://github.com/volcano-sh/kthena/blob/main/examples/model-serving/prefill-decode-disaggregation.yaml>
 
-Deploy it with below command:
+Deploy it with the command below:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/volcano-sh/kthena/refs/heads/main/examples/model-serving/prefill-decode-disaggregation.yaml
@@ -137,7 +137,7 @@ spec:
                   - "--trust-remote-code"
                   - "--enforce-eager"
                   - "--kv-transfer-config"
-                  - '{"kv_connector":"MooncakeConnectorV1","kv_buffer_device":"npu","kv_role":"kv_producer","kv_parallel_size":1,"kv_port":"20001","engine_id":"0","kv_rank":0,"kv_connector_module_path":"vllm_ascend.distributed.mooncake_connector","kv_connector_extra_config":{"prefill":{"dp_size":2,"tp_size":2},"decode":{"dp_size":2,"tp_size":2}}}'
+                  - '{"kv_connector":"MooncakeConnectorV1","kv_buffer_device":"npu","kv_role":"kv_producer","kv_parallel_size":1,"kv_port":"20001","engine_id":"0","kv_rank":0,"kv_connector_extra_config":{"prefill":{"dp_size":2,"tp_size":2},"decode":{"dp_size":2,"tp_size":2}}}'
                 imagePullPolicy: Always
                 resources:
                   limits:
@@ -240,7 +240,7 @@ spec:
                   - "--no-enable-prefix-caching"
                   - "--enforce-eager"
                   - "--kv-transfer-config"
-                  - '{"kv_connector":"MooncakeConnectorV1","kv_buffer_device":"npu","kv_role":"kv_consumer","kv_parallel_size":1,"kv_port":"20002","engine_id":"1","kv_rank":1,"kv_connector_module_path":"vllm_ascend.distributed.mooncake_connector","kv_connector_extra_config":{"prefill":{"dp_size":2,"tp_size":2},"decode":{"dp_size":2,"tp_size":2}}}'
+                  - '{"kv_connector":"MooncakeConnectorV1","kv_buffer_device":"npu","kv_role":"kv_consumer","kv_parallel_size":1,"kv_port":"20002","engine_id":"1","kv_rank":1,"kv_connector_extra_config":{"prefill":{"dp_size":2,"tp_size":2},"decode":{"dp_size":2,"tp_size":2}}}'
                 imagePullPolicy: Always
                 resources:
                   limits:
@@ -295,7 +295,7 @@ You should see Pods such as:
 - `deepseek-v2-lite-0-prefill-0-0`
 - `deepseek-v2-lite-0-decode-0-0`
 
-To enable the llm access, we still need to configure the routing layer with `ModelServer` and `ModelRoute`.
+To enable the LLM access, we still need to configure the routing layer with `ModelServer` and `ModelRoute`.
 
 ### 2.3 ModelServer: PD Group Management
 
@@ -306,7 +306,7 @@ The `ModelServer` resource:
 - Configures KV connector details and timeouts.
 - Exposes an internal gRPC/HTTP interface.
 
-Create modelServer with below command:
+Create ModelServer with the command below:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/volcano-sh/kthena/refs/heads/main/examples/kthena-router/ModelServer-prefill-decode-disaggregation.yaml

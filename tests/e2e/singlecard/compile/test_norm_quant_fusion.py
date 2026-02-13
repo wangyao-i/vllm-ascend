@@ -21,7 +21,6 @@ import torch
 import torch.nn as nn
 import torch_npu
 import vllm.config
-from vllm.compilation.fx_utils import OpOverload
 from vllm.config import ModelConfig, VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment)
@@ -32,7 +31,27 @@ from tests.e2e.singlecard.compile.backend import TestBackend
 from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 from vllm_ascend.compilation.passes.norm_quant_fusion_pass import \
     AddRMSNormQuantFusionPass
+from vllm_ascend.utils import enable_custom_op
+from vllm_ascend.utils import vllm_version_is
 
+if vllm_version_is("0.15.0"):
+    from vllm.compilation.fx_utils import OpOverload  # type: ignore
+else:
+    from vllm.compilation.passes.fx_utils import OpOverload
+
+
+# Cache backend to avoid duplicate pattern registration
+_backend_cache = None
+
+
+def get_or_create_backend(vllm_config):
+    """Get or create backend with fusion passes (cached to avoid duplicate pattern registration)."""
+    global _backend_cache
+    if _backend_cache is None:
+        _backend_cache = TestBackend(custom_passes=[
+            AddRMSNormQuantFusionPass(vllm_config=vllm_config)
+        ])
+    return _backend_cache
 
 class TestModelWithoutBias(nn.Module):
     """
@@ -67,8 +86,8 @@ class TestModelWithoutBias(nn.Module):
         """
         residual = torch.zeros_like(x)
 
-        norm_output, _, new_residual = torch_npu.npu_add_rms_norm(
-            x, residual, self.rms_norm_weight, self.eps)
+        norm_output, _, new_residual = torch.ops._C_ascend.npu_add_rms_norm_bias(
+            x, residual, self.rms_norm_weight, None, self.eps)
 
         quantized_output = torch.ops.vllm.quantize(norm_output,
                                                    self.quant_scale,
@@ -80,7 +99,7 @@ class TestModelWithoutBias(nn.Module):
     def ops_in_model_before(self) -> List[OpOverload]:
         """Return the list of expected operators BEFORE fusion."""
         return [
-            torch.ops.npu.npu_add_rms_norm.default,
+            torch.ops._C_ascend.npu_add_rms_norm_bias.default,
             torch.ops.vllm.quantize.default
         ]
 
@@ -124,11 +143,8 @@ class TestModelWithBias(nn.Module):
         """
         residual = torch.zeros_like(x)
 
-        norm_output, _, new_residual = torch_npu.npu_add_rms_norm(
-            x, residual, self.rms_norm_weight, self.eps)
-
-        # Add bias
-        norm_output_with_bias = norm_output + self.bias
+        norm_output_with_bias, _, new_residual = torch.ops._C_ascend.npu_add_rms_norm_bias(
+            x, residual, self.rms_norm_weight, self.bias, self.eps)
 
         quantized_output = torch.ops.vllm.quantize(norm_output_with_bias,
                                                    self.quant_scale,
@@ -140,8 +156,7 @@ class TestModelWithBias(nn.Module):
     def ops_in_model_before(self) -> List[OpOverload]:
         """Return the list of expected operators BEFORE fusion."""
         return [
-            torch.ops.npu.npu_add_rms_norm.default,
-            torch.ops.aten.add.Tensor,  # Add bias operation
+            torch.ops._C_ascend.npu_add_rms_norm_bias.default,
             torch.ops.vllm.quantize.default
         ]
 
@@ -184,8 +199,8 @@ class TestModelSPWithoutBias(nn.Module):
         """
         residual = torch.zeros_like(x)
 
-        norm_output, _, new_residual = torch_npu.npu_add_rms_norm(
-            x, residual, self.rms_norm_weight, self.eps)
+        norm_output, _, new_residual = torch.ops._C_ascend.npu_add_rms_norm_bias(
+            x, residual, self.rms_norm_weight, None, self.eps)
 
         norm_output = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
             norm_output, True)
@@ -200,7 +215,7 @@ class TestModelSPWithoutBias(nn.Module):
     def ops_in_model_before(self) -> List[OpOverload]:
         """Return the list of expected operators BEFORE fusion."""
         return [
-            torch.ops.npu.npu_add_rms_norm.default,
+            torch.ops._C_ascend.npu_add_rms_norm_bias.default,
             torch.ops.vllm.maybe_all_gather_and_maybe_unpad.default,
             torch.ops.vllm.quantize.default
         ]
@@ -249,11 +264,8 @@ class TestModelSPWithBias(nn.Module):
         """
         residual = torch.zeros_like(x)
 
-        norm_output, _, new_residual = torch_npu.npu_add_rms_norm(
-            x, residual, self.rms_norm_weight, self.eps)
-
-        # Add bias
-        norm_output_with_bias = norm_output + self.bias
+        norm_output_with_bias, _, new_residual = torch.ops._C_ascend.npu_add_rms_norm_bias(
+            x, residual, self.rms_norm_weight, self.bias, self.eps)
 
         norm_output_with_bias = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
             norm_output_with_bias, True)
@@ -268,8 +280,7 @@ class TestModelSPWithBias(nn.Module):
     def ops_in_model_before(self) -> List[OpOverload]:
         """Return the list of expected operators BEFORE fusion."""
         return [
-            torch.ops.npu.npu_add_rms_norm.default,
-            torch.ops.aten.add.Tensor,  # Add bias operation
+            torch.ops._C_ascend.npu_add_rms_norm_bias.default,
             torch.ops.vllm.maybe_all_gather_and_maybe_unpad.default,
             torch.ops.vllm.quantize.default
         ]
@@ -305,22 +316,23 @@ def test_rmsnorm_quant_fusion(
 
     vllm_config = VllmConfig(model_config=ModelConfig(dtype=dtype))
 
-    update_environment_variables({
-        "RANK": "0",
-        "LOCAL_RANK": "0",
-        "WORLD_SIZE": "1",
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "12345",
-    })
-    init_distributed_environment()
-    ensure_model_parallel_initialized(1, 1)
+    with vllm.config.set_current_vllm_config(vllm_config):
+        update_environment_variables({
+            "RANK": "0",
+            "LOCAL_RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "12345",
+        })
+        init_distributed_environment()
+        ensure_model_parallel_initialized(1, 1)
 
     with vllm.config.set_current_vllm_config(vllm_config):
         with set_ascend_forward_context(None, vllm_config):
-            backend = TestBackend(custom_passes=[
-                AddRMSNormQuantFusionPass(vllm_config=vllm_config)
-            ])
+            backend = get_or_create_backend(vllm_config)
             if use_bias:
+                if not enable_custom_op():
+                    return
                 if sp_enable:
                     model = TestModelSPWithBias(hidden_size,
                                                 dtype,
