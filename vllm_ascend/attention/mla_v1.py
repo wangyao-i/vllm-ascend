@@ -1170,6 +1170,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         sin: torch.Tensor,
         kv_cache: Tuple,
         slots: torch.Tensor,
+        layer: nn.Module = None,
     ):
         B = kv_no_split.shape[0]
         N = self.num_kv_heads
@@ -1177,19 +1178,28 @@ class AscendMLAImpl(MLAAttentionImpl):
         # npu_kv_rmsnorm_rope_cache needs [B, N, S, D]
         kv_no_split = kv_no_split.view(
             B, N, S, self.kv_lora_rank + self.qk_rope_head_dim)
-        cache_mode = "PA"
-        _, _, k_pe, k_nope = torch_npu.npu_kv_rmsnorm_rope_cache(
-            kv_no_split,
-            self.kv_a_layernorm.weight,
-            cos,
-            sin,
-            slots.to(torch.int64),
-            kv_cache[1],
-            kv_cache[0],
-            epsilon=self.kv_a_layernorm.variance_epsilon,
-            cache_mode=cache_mode,
-            is_output_kv=True,
-        )
+        if getattr(layer, "fa_quant_layer", False):
+            k_scale = None if layer is None else layer.quant_kscale_perdim
+            k_nope,k_pe = torch.split(kv_no_split, [512, 64], dim=-1)
+            k_nope, _ = torch_npu.npu_rms_norm(k_nope, self.kv_a_layernorm.weight, self.kv_a_layernorm.variance_epsilon)
+            k_pe = torch_npu.npu_interleave_rope(k_pe,cos,sin)
+            quant_k_nope = torch_npu.npu_quantize(input=k_nope,scales=k_scale,zero_points=None,dtype=kv_cache[0].dtype,axis=-1)
+            torch_npu.npu_scatter_pa_kv_cache(key=quant_k_nope.squeeze(1), value=quant_k_nope.squeeze(1), slot_mapping=slots.to(torch.int64), key_cache=kv_cache[0],value_cache= kv_cache[0])
+            torch_npu.npu_scatter_pa_kv_cache(key=k_pe.squeeze(1), value=k_pe.squeeze(1), slot_mapping=slots.to(torch.int64), key_cache=kv_cache[1],value_cache= kv_cache[1])
+        else:
+            cache_mode = "PA"
+            _, _, k_pe, k_nope = torch_npu.npu_kv_rmsnorm_rope_cache(
+                kv_no_split,
+                self.kv_a_layernorm.weight,
+                cos,
+                sin,
+                slots.to(torch.int64),
+                kv_cache[1],
+                kv_cache[0],
+                epsilon=self.kv_a_layernorm.variance_epsilon,
+                cache_mode=cache_mode,
+                is_output_kv=True,
+            )
         return k_pe, k_nope
 
     def rope_single(
@@ -1408,7 +1418,7 @@ class AscendMLAImpl(MLAAttentionImpl):
             num_decode_tokens:num_actual_tokens]
         prefill_q_pe = self.rope_single(prefill_q_pe, cos, sin)
         prefill_k_pe, prefill_k_c_normed = self.exec_kv_prefill(
-            prefill_kv_no_split, cos, sin, kv_cache, prefill_slots)
+            prefill_kv_no_split, cos, sin, kv_cache, prefill_slots, layer)
         prefill_k_nope, prefill_value = self.kv_b_proj(
             prefill_k_c_normed)[0].view(
                 -1, self.num_heads,
@@ -1437,7 +1447,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                                          decode_k_nope, decode_k_pe)
 
     def _mla_preprocess(self, layer_name, hidden_states, kv_cache,
-                        attn_metadata, need_gather_q_kv):
+                        attn_metadata, need_gather_q_kv, layer = None):
         # MLA Preprocess:
         # 1. Perform fused_qkv_a_proj and q_a_layernorm to obtain q_c and kv_no_split
         # or
@@ -1500,6 +1510,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         attn_metadata: M,
         need_gather_q_kv: bool = False,
         output: Optional[torch.Tensor] = None,
+        layer: nn.Module = None,
     ) -> torch.Tensor:
         assert output is not None, "Output tensor must be provided."
         if attn_metadata is None:
@@ -1534,7 +1545,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         else:
             decode_preprocess_res, prefill_preprocess_res = self._mla_preprocess(
                 layer_name, hidden_states, kv_cache, attn_metadata,
-                need_gather_q_kv)
+                need_gather_q_kv, layer)
         if decode_preprocess_res is not None:
             # MLA Preprocess for decoding
             output_decode = self._forward_decode(decode_preprocess_res.ql_nope,

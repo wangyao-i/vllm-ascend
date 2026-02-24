@@ -16,17 +16,23 @@
 #
 
 
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union, TypeVar
 
 import torch
 import torch_npu
 from vllm.config import CompilationMode, get_current_vllm_config
-from vllm.distributed import get_ep_group
-from vllm.forward_context import get_forward_context
+from vllm.distributed import get_ep_group, get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+from vllm.forward_context import get_forward_context, ForwardContext
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.ops.fused_moe.experts_selector import select_experts
+from vllm_ascend.attention.mla_v1 import AscendMLAMetadata
+from vllm_ascend.models.layers.mla import AscendMLAModules
+from vllm_ascend.ops.weight_prefetch import maybe_npu_prefetch
+from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.compilation.acl_graph import (get_graph_params,
+                                               update_graph_params_workspaces)
 
 
 GROUP_SIZE = 32
@@ -247,5 +253,364 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod:
             layer.w13_weight_scale.data = layer.w13_weight_scale.data.transpose(1, 2)
             layer.w2_weight_scale.data = layer.w2_weight_scale.data.transpose(1, 2)
 
+def weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor):
+    """fa_q weight loader."""
+    if param.numel() == 1 and loaded_weight.numel() == 1:
+        param.data.fill_(loaded_weight.item())
+    else:
+        tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
+        shard_size = loaded_weight.shape[0] // tp_size
+        loaded_weight = loaded_weight.narrow(0, shard_size * tp_rank,
+                                             shard_size)
+        assert param.size() == loaded_weight.size(), (
+            f"Attempted to load weight ({loaded_weight.size()}) "
+            f"into parameter ({param.size()}) when TP is ({tp_size})")
 
+        param.data.copy_(loaded_weight)
+
+M = TypeVar("M", bound=AscendMLAMetadata)
+
+class AscendFAQuantAttentionMethod:
+
+    def __init__(self):
+        self.transpose_weight = True
+        self.printFlag = False
+
+    def create_weights(self, layer: torch.nn.Module) -> None:
+        extra_module_names = ["fa_q", "fa_k", "fa_v"]
+        for name in extra_module_names:
+            setattr(layer, name, torch.nn.Module())
+
+        params_dict = {}
+        dtype = torch.get_default_dtype()
+
+        params_dict["fa_q.scale"] = torch.empty((layer.num_heads, 1),
+                                                dtype=torch.float32)
+        params_dict["fa_k.scale"] = torch.empty((layer.num_kv_heads, 1),
+                                                dtype=torch.float32)
+        params_dict["fa_v.scale"] = torch.empty((layer.num_kv_heads, 1),
+                                                dtype=torch.float32)
+        params_dict["fa_q.offset"] = torch.empty((layer.num_heads, 1),
+                                                 dtype=torch.int8)
+        params_dict["fa_k.offset"] = torch.empty((layer.num_kv_heads, 1),
+                                                 dtype=torch.int8)
+        params_dict["fa_v.offset"] = torch.empty((layer.num_kv_heads, 1),
+                                                 dtype=torch.int8)
+        for name, weight in params_dict.items():
+            module_name, weight_name = name.split('.')
+            module = getattr(layer, module_name)
+            weight_param = torch.nn.Parameter(weight, requires_grad=False)
+            module.register_parameter(weight_name, weight_param)
+            setattr(weight_param, "weight_loader", weight_loader)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if not hasattr(layer,"fa_quant_layer") or layer.fa_quant_layer is False:
+            return
+        fa_qscale = layer.fa_q.scale
+        fa_kscale = layer.fa_k.scale
+        fa_vscale = layer.fa_v.scale
+        head_size = 1 if layer.use_mla else layer.head_size
+        
+        layer.fa_qscale = 1.0 / torch.nn.Parameter(layer.fa_q.scale,
+                                                   requires_grad=False)
+        layer.fa_qscale = layer.fa_qscale.transpose(-2, -1).contiguous().unsqueeze(0)
+        layer.quant_qscale = torch.nn.Parameter(layer.fa_q.scale,
+                                                   requires_grad=False)
+
+        repeated_fa_kscale = torch.squeeze(layer.fa_k.scale).unsqueeze(0)
+        layer.fa_kscale = torch.nn.Parameter(repeated_fa_kscale.to(torch.float),
+                                             requires_grad=False)
+        layer.quant_kscale = torch.nn.Parameter(repeated_fa_kscale.to(torch.bfloat16),
+                                             requires_grad=False)
+        repeated_fa_kscale_perdim = repeated_fa_kscale.repeat(512)
+        layer.quant_kscale_perdim = torch.nn.Parameter(repeated_fa_kscale_perdim.to(torch.float),
+                                             requires_grad=False)
+
+        repeated_fa_vscale = torch.squeeze(layer.fa_v.scale).unsqueeze(0)
+        layer.fa_vscale = torch.nn.Parameter(repeated_fa_vscale.to(torch.float),
+                                             requires_grad=False)
+        repeated_fa_vscale_perdim = repeated_fa_vscale.repeat(64)
+        layer.quant_vscale_perdim = torch.nn.Parameter(repeated_fa_vscale_perdim.to(torch.float),
+                                             requires_grad=False)
+
+        repeated_query_offset = layer.fa_q.offset.repeat(1, head_size)
+        layer.fa_qoffset = torch.nn.Parameter(repeated_query_offset.to(torch.float),
+                                              requires_grad=False)
+        repeated_fa_koffset = torch.squeeze(layer.fa_k.offset).unsqueeze(0)
+        layer.fa_kvoffset = torch.nn.Parameter(repeated_fa_koffset.to(torch.float),
+                                               requires_grad=False)
+
+        if fa_kscale.shape[0] <= 0:
+            raise ValueError(
+                "Expected size of fa_kscale in dimension 0 should be greater than 0"
+                f"but got {fa_kscale.shape[0]}.")
+        gqa_size = fa_qscale.shape[0] // fa_kscale.shape[0]
+        fa3_k_scale, fa3_v_scale = fa_kscale.repeat(1, gqa_size).view(
+            -1, 1), fa_vscale.repeat(1, gqa_size).view(-1, 1)
+        layer.qk_scale = torch.nn.Parameter(torch.squeeze(
+            fa_qscale * fa3_k_scale).to(torch.float),
+                                            requires_grad=False)
+        layer.fa3_k_scale = torch.nn.Parameter(
+            torch.squeeze(fa3_k_scale).contiguous().to(torch.float),
+            requires_grad=False)
+        layer.fa3_v_scale = torch.nn.Parameter(
+            torch.squeeze(fa3_v_scale).contiguous().to(torch.float),
+            requires_grad=False)
+        
+
+    def apply(self, layer: torch.nn.Module, hidden_states: torch.Tensor,
+              kv_cache: Tuple[torch.Tensor], attn_metadata: M, mla_module: AscendMLAModules, need_gather_q_kv: bool = False,
+        
+        output: Optional[torch.Tensor] = None,) -> torch.Tensor:
+        forward_context = get_forward_context()
+        if not forward_context.with_prefill:
+            self.mla_decode_apply_aclnn(layer, hidden_states, kv_cache, attn_metadata, mla_module, need_gather_q_kv, output)
+            return output
+        layer_impl = None if getattr(layer, "fa_quant_layer", False) == False else layer
+        layer.impl.forward(layer.layer_name, hidden_states, kv_cache, attn_metadata,
+                            need_gather_q_kv, output, layer_impl)
+        return output
+
+    def exec_kv_decode(
+        self,
+        impl,
+        kv_no_split: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        kv_cache: Tuple,
+        slots: torch.Tensor,
+        layer
+    ):
+        B = kv_no_split.shape[0]
+        N = impl.num_kv_heads
+        S = 1
+        kv_no_split = kv_no_split.view(
+            B, N, S, impl.kv_lora_rank + impl.qk_rope_head_dim)
+        k_scale = None if layer is None else layer.quant_kscale_perdim
+        k_nope,k_pe = torch.split(kv_no_split, [512, 64], dim=-1)
+        k_nope, _ = torch_npu.npu_rms_norm(k_nope, impl.kv_a_layernorm.weight, impl.kv_a_layernorm.variance_epsilon)
+        k_pe = torch_npu.npu_interleave_rope(k_pe,cos,sin)
+        quant_k_nope = torch_npu.npu_quantize(input=k_nope,scales=k_scale,zero_points=None,dtype=kv_cache[0].dtype,axis=-1)
+        torch_npu.npu_scatter_pa_kv_cache(key=quant_k_nope.squeeze(1), value=quant_k_nope.squeeze(1), slot_mapping=slots.to(torch.int64), key_cache=kv_cache[0],value_cache= kv_cache[0])
+        torch_npu.npu_scatter_pa_kv_cache(key=k_pe.squeeze(1), value=k_pe.squeeze(1), slot_mapping=slots.to(torch.int64), key_cache=kv_cache[1],value_cache= kv_cache[1])
+
+        return kv_cache[1], kv_cache[0]
+
+
+    def _mla_preprocess(self, impl, hidden_states, kv_cache,
+                        attn_metadata, need_gather_q_kv, layer = None):
+        # MLA Preprocess:
+        # 1. Perform q_a_proj and q_a_layernorm to obtain q_c
+        # 2. Perform kv_a_proj_with_mqa to obtain kv_no_split
+        # 3. If need_gather_q_kv, perform all_gather.
+        # 4. Preprocess decode tokens, write kv cache and get:
+        # decode_ql_nope, decode_q_pe, decode_k_pe, decode_k_nope
+        # 5. Preprocess prefill tokens, write kv cache and get:
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        if impl.fused_qkv_a_proj is not None:
+            maybe_npu_prefetch(inputs=impl.fused_qkv_a_proj.weight,
+                               dependency=hidden_states,
+                               enabled=impl.enable_prefetch)
+            qkv_lora = impl.fused_qkv_a_proj(hidden_states)[0]
+            q_c, kv_no_split = qkv_lora.split(
+                [impl.q_lora_rank, impl.kv_lora_rank + impl.qk_rope_head_dim],
+                dim=-1,
+            )
+            q_c = impl.q_a_layernorm(q_c)
+        else:
+            q_c = hidden_states
+            kv_no_split = impl.kv_a_proj_with_mqa(hidden_states)[0]
+        # Process for Flash Comm V1
+        q_c = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
+            q_c, need_gather_q_kv)
+        kv_no_split = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
+            kv_no_split, need_gather_q_kv)
+        # Preprocess for decode tokens
+        decode_q_c = q_c[:num_decode_tokens]
+        cos = attn_metadata.decode.cos
+        sin = attn_metadata.decode.sin
+        decode_ql_nope, decode_q_pe = \
+            impl._q_proj_and_k_up_proj(decode_q_c)
+        decode_q_pe = impl.rope_single(decode_q_pe, cos, sin)
+        decode_slots = attn_metadata.slot_mapping[:num_decode_tokens]
+        decode_kv_no_split = kv_no_split[:num_decode_tokens]
+        decode_k_pe, decode_k_nope = self.exec_kv_decode(impl,
+            decode_kv_no_split, cos, sin, kv_cache, decode_slots,layer)
+        return decode_ql_nope, decode_q_pe, decode_k_nope, decode_k_pe
+    
+    
+    def _mla_decode(self, impl, layer,
+        q_nope: torch.Tensor,
+        q_pe: torch.Tensor,
+        k_nope: torch.Tensor,
+        k_pe: torch.Tensor,
+        block_size: int,
+        attn_metadata: AscendMLAMetadata,
+    ) -> torch.Tensor:
+        decode_meta = attn_metadata.decode
+        assert decode_meta is not None
+        num_tokens = q_nope.size(0)
+        # shape of knope/k_pe for npu graph mode should be:
+        # [num_blocks, num_kv_heads, block_size, self.kv_lora_rank/self.qk_rope_head_dim]
+        actual_seq_lengths = None
+        if impl.enable_kv_nz:
+            k_nope = k_nope.view(-1, impl.num_kv_heads,
+                                 impl.kv_lora_rank // 32, block_size, 32)
+            k_pe = k_pe.view(-1, impl.num_kv_heads,
+                             impl.qk_rope_head_dim // 16, block_size, 16)
+            input_layout = "BSND"
+        else:
+            k_nope = k_nope.view(-1, impl.num_kv_heads, block_size,
+                                 impl.kv_lora_rank)
+            k_pe = k_pe.view(-1, impl.num_kv_heads, block_size,
+                             impl.qk_rope_head_dim)
+            input_layout = "BNSD"
+
+        if attn_metadata.attn_state in [
+                AscendAttentionState.SpecDecoding,
+                AscendAttentionState.ChunkedPrefill,
+                AscendAttentionState.DecodeOnly,
+        ] and impl.speculative_config is not None:
+            # Use TND layout for pure SpecDecoding and SpecDecoding in ChunkedPrefill
+            input_layout = "TND"
+            # [bs * q_seq_len, num_heads_per_rank, dim]
+            # TODO: If the driver is upgraded later, the contiguous function can be deleted.
+            q_nope = q_nope.view(num_tokens, impl.num_heads, -1).contiguous()
+            q_pe = q_pe.view(num_tokens, impl.num_heads, -1)
+            sparse_mode = 3
+            spec_attn_mask = attn_metadata.decode.attn_mask  # type:ignore
+            actual_seq_lengths = decode_meta.actual_seq_lengths_q
+        else:
+            if impl.enable_kv_nz:
+                q_nope = q_nope.view(num_tokens, 1, impl.num_heads,
+                                     -1).contiguous()
+                q_pe = q_pe.view(num_tokens, 1, impl.num_heads, -1)
+            else:
+                q_nope = q_nope.view(num_tokens, impl.num_heads, 1,
+                                     -1).contiguous()
+                q_pe = q_pe.view(num_tokens, impl.num_heads, 1, -1)
+            sparse_mode = 0
+            spec_attn_mask = None
+            # [bs * q_seq_len, num_heads_per_rank, dim]
+            # TODO: If the driver is upgraded later, the contiguous function can be deleted.
+        common_kwargs = {
+            'query_rope': q_pe,
+            'key_rope': k_pe,
+            'num_heads': impl.num_heads,
+            'num_key_value_heads': impl.num_kv_heads,
+            'input_layout': input_layout,
+            'atten_mask': spec_attn_mask,
+            'sparse_mode': sparse_mode,
+            'scale': impl.scale,
+            'antiquant_mode': 0,
+            'antiquant_scale': None,
+            'block_table': decode_meta.block_table,
+            'block_size': block_size,
+            "actual_seq_lengths": actual_seq_lengths,
+            "actual_seq_lengths_kv": decode_meta.seq_lens_list,
+        }
+        graph_params = get_graph_params()
+        forward_context: ForwardContext = get_forward_context()
+        if forward_context.capturing:
+            stream = torch_npu.npu.current_stream()
+
+            event = torch.npu.ExternalEvent()
+            event.wait(stream)
+            event.reset(stream)
+            graph_params.events[num_tokens].append(event)
+
+            workspace = graph_params.workspaces.get(num_tokens)
+            if workspace is None:
+                workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(
+                    q_nope, k_nope, k_nope, **common_kwargs)
+                update_graph_params_workspaces(num_tokens,
+                                               weak_ref_tensors(workspace))
+
+            attn_output = torch.empty_like(q_nope)
+            softmax_lse = torch.empty(num_tokens,
+                                      dtype=q_nope.dtype,
+                                      device=q_nope.device)
+
+            graph_params.attn_params[num_tokens].append(
+                (weak_ref_tensors(q_nope), weak_ref_tensors(k_nope),
+                 weak_ref_tensors(q_pe), weak_ref_tensors(k_pe),
+                 impl.num_heads, impl.num_kv_heads, input_layout,
+                 weak_ref_tensors(spec_attn_mask) if spec_attn_mask is not None
+                 else None, sparse_mode, impl.scale, decode_meta.block_table,
+                 block_size, decode_meta.seq_lens_list, actual_seq_lengths,
+                 weak_ref_tensors(attn_output), weak_ref_tensors(softmax_lse)))
+
+            torch.npu.graph_task_group_begin(stream)
+            torch_npu.npu_fused_infer_attention_score.out(
+                q_nope,
+                k_nope,
+                k_nope,
+                **common_kwargs,
+                workspace=workspace,
+                out=[attn_output, softmax_lse])
+            handle = torch.npu.graph_task_group_end(stream)
+            graph_params.handles[num_tokens].append(handle)
+        else:
+            q_nope, pertoken_scale = torch_npu.npu_dynamic_quant(q_nope,dst_type=torch.float8_e4m3fn)
+            common_kwargs_v2 = {
+            'query_rope': q_pe,
+            'key_rope': k_pe,
+            'num_query_heads': impl.num_heads,
+            'num_key_value_heads': impl.num_kv_heads,
+            'input_layout': input_layout,
+            'atten_mask': spec_attn_mask,
+            'sparse_mode': sparse_mode,
+            'softmax_scale': impl.scale,
+            'query_quant_mode': 3,
+            'key_quant_mode': 0,
+            'value_quant_mode': 0,
+            'dequant_scale_query': pertoken_scale,
+            'dequant_scale_key': layer.fa_kscale,
+            'dequant_scale_value': layer.fa_vscale,
+            'block_table': decode_meta.block_table,
+            'block_size': block_size,
+            "actual_seq_qlen": actual_seq_lengths,
+            "actual_seq_kvlen": decode_meta.seq_lens_list,
+        }
+            decode_meta.seq_lens_list[1] = decode_meta.seq_lens_list[0]
+            attn_output, _ = torch_npu.npu_fused_infer_attention_score_v2(
+                q_nope, k_nope, k_nope, **common_kwargs_v2)
+
+        return impl._v_up_proj(attn_output)
+
+    def mla_decode_apply_aclnn(self, layer: torch.nn.Module, hidden_states: torch.Tensor,
+              kv_cache: Tuple[torch.Tensor], attn_metadata: M, mla_module: AscendMLAModules, need_gather_q_kv: bool = False,
+                output: Optional[torch.Tensor] = None,) -> torch.Tensor: # 面向 DeepseekV2DecoderLayer
+        impl = layer.impl
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        output_padded = output
+        o_proj_input_shape = (get_forward_context().num_tokens,
+                              impl.num_heads * impl.v_head_dim)
+        o_proj_input = torch.empty(o_proj_input_shape,
+                                   dtype=hidden_states.dtype,
+                                   device=hidden_states.device)
+        q_nope, q_pe, k_nope, k_pe = self._mla_preprocess(
+                impl, hidden_states, kv_cache, attn_metadata,
+                need_gather_q_kv,layer)
+
+
+        o_proj_input[:num_decode_tokens] = self._mla_decode(impl, layer, q_nope, q_pe, k_nope,
+                                                        k_pe, kv_cache[0].shape[1], attn_metadata)
+
+        MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024
+        maybe_npu_prefetch(inputs=impl.o_proj.weight,
+                           dependency=o_proj_input,
+                           max_size=MAX_O_PROJ_PREFETCH_SIZE,
+                           enabled=impl.enable_prefetch)
+
+        output[...] = impl.o_proj(o_proj_input,
+                                  is_prefill=False)[0]
+        del o_proj_input
+
+        return output_padded
+        
+        
 
