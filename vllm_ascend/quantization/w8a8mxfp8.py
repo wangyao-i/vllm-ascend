@@ -125,6 +125,7 @@ class AscendW8A8MXFP8DynamicFusedMoEMethod:
                 and not vllm_config.model_config.enforce_eager
                 and not ascend_config.torchair_graph_config.enabled)
         self.dynamic_eplb = ascend_config.dynamic_eplb or ascend_config.expert_map_record_path
+        self.supports_eplb = True
 
     @staticmethod
     def get_weight(num_experts: int, intermediate_size_per_partition: int,
