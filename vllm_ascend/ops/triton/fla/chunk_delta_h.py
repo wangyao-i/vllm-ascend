@@ -156,7 +156,10 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
             b_h1_bv1 = b_h1_bv1 * b_g_last
 
         b_v_new1 = b_v_new1.to(k.dtype.element_ty)
-        b_h1_bv1 += tl.dot(b_k, b_v_new1)
+        b_h1_bv1_add = tl.dot(b_k, b_v_new1)
+        b_h1_bv1_add /= 2
+        b_h1_bv1_add *= 2
+        b_h1_bv1 += b_h1_bv1_add
 
         mask_v2 = (offs_t_v < T) & (offs_v2 < V)
         ptr_v2 = v_base + offs_t_v * stride_v + offs_v2 * 1
@@ -177,7 +180,10 @@ def chunk_gated_delta_rule_fwd_kernel_h_blockdim64(
             b_h1_bv2 = b_h1_bv2 * b_g_last
 
         b_v_new2 = b_v_new2.to(k.dtype.element_ty)
-        b_h1_bv2 += tl.dot(b_k, b_v_new2)
+        b_h1_bv2_add = tl.dot(b_k, b_v_new2)
+        b_h1_bv2_add /= 2
+        b_h1_bv2_add *= 2
+        b_h1_bv2 += b_h1_bv2_add
 
     # epilogue
     if STORE_FINAL_STATE:

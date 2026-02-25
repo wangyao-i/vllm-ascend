@@ -14,7 +14,7 @@ import torch
 from vllm.triton_utils import tl, triton
 
 from .utils import prepare_chunk_indices
-
+import triton.language.extra.cann.extension as extension
 
 @triton.heuristics({"IS_VARLEN": lambda args: args["cu_seqlens"] is not None})
 @triton.jit(do_not_specialize=["T"])
@@ -78,7 +78,7 @@ def solve_tril_16x16_kernel(
             # 4 Use mask to safely load data
             b_A_subrec16 = tl.load(ptr_A_subrec16, mask=load_mask,
                                    other=0.0).to(tl.float32)
-            b_A = tl.insert_slice(
+            b_A = extension.insert_slice(
                 ful=b_A,
                 sub=b_A_subrec16[None, :, :],  # (1, 16, 16)
                 offsets=[blkid, 0, 0],
@@ -97,7 +97,7 @@ def solve_tril_16x16_kernel(
 
         # for loop to update N_BLOCKS row vector
         for i in range(1, 16):
-            nblks_vec16 = -tl.extract_slice(local_ori_A, (i, 0),
+            nblks_vec16 = -extension.extract_slice(local_ori_A, (i, 0),
                                             (1, 16 * N_BLOCKS),
                                             (16 * N_BLOCKS, 1))
             b_a = tl.reshape(nblks_vec16, (N_BLOCKS, 16))
@@ -107,7 +107,7 @@ def solve_tril_16x16_kernel(
             b_a = b_a + dot_product
 
             b_a_new_expanded = b_a[:, None, :]
-            b_A = tl.insert_slice(ful=b_A,
+            b_A = extension.insert_slice(ful=b_A,
                                   sub=b_a_new_expanded,
                                   offsets=[0, i, 0],
                                   sizes=[N_BLOCKS, 1, 16],
@@ -253,6 +253,8 @@ def merge_16x16_to_64x64_inverse_kernel(
     ptr_A = A + offs_m[:, None] * (H * 64) + offs_n[None, :]
     A_21 = tl.load(ptr_A, mask=mask_A, other=0.0).to(tl.float32)
     tmp = tl.dot(Ai_22, A_21, input_precision="ieee")
+    tmp = tmp / 2
+    tmp = tmp * 2
 
     # load Ai_11 (Ad block at row i_t * 64, col 0, 16 * 16)
     offs_m = i_t * 64 + tl.arange(0, 16)
@@ -276,6 +278,8 @@ def merge_16x16_to_64x64_inverse_kernel(
     ptr_A = A + offs_m[:, None] * (H * 64) + offs_n[None, :]
     A_43 = tl.load(ptr_A, mask=mask_A, other=0.0).to(tl.float32)
     tmp = tl.dot(Ai_44, A_43, input_precision="ieee")
+    tmp = tmp / 2
+    tmp = tmp * 2
 
     # load Ai_33 (Ad block at row i_t * 64 + 32, col 0, 16 * 16)
     offs_m = i_t * 64 + 32 + tl.arange(0, 16)
@@ -288,9 +292,9 @@ def merge_16x16_to_64x64_inverse_kernel(
 
     # build Ai_22_32 (32 * 32)
     Ai_22_32 = tl.zeros((32, 32), tl.float32)
-    Ai_22_32 = tl.insert_slice(Ai_22_32, Ai_33, (0, 0), (16, 16), (1, 1))
-    Ai_22_32 = tl.insert_slice(Ai_22_32, Ai_44, (16, 16), (16, 16), (1, 1))
-    Ai_22_32 = tl.insert_slice(Ai_22_32, Ai_43, (16, 0), (16, 16), (1, 1))
+    Ai_22_32 = extension.insert_slice(Ai_22_32, Ai_33, (0, 0), (16, 16), (1, 1))
+    Ai_22_32 = extension.insert_slice(Ai_22_32, Ai_44, (16, 16), (16, 16), (1, 1))
+    Ai_22_32 = extension.insert_slice(Ai_22_32, Ai_43, (16, 0), (16, 16), (1, 1))
 
     # load A_21_32 (A block at row i_t * 64 + 32, col 0, 32 * 32)
     offs_m = i_t * 64 + 32 + tl.arange(0, 32)
@@ -299,12 +303,14 @@ def merge_16x16_to_64x64_inverse_kernel(
     ptr_A = A + offs_m[:, None] * (H * 64) + offs_n[None, :]
     A_21_32 = tl.load(ptr_A, mask=mask_A, other=0.0).to(tl.float32)
     tmp = tl.dot(Ai_22_32, A_21_32, input_precision="ieee")
+    tmp = tmp / 2
+    tmp = tmp * 2
 
     # build Ai_11_32 (32 * 32)
     Ai_11_32 = tl.zeros((32, 32), tl.float32)
-    Ai_11_32 = tl.insert_slice(Ai_11_32, Ai_11, (0, 0), (16, 16), (1, 1))
-    Ai_11_32 = tl.insert_slice(Ai_11_32, Ai_22, (16, 16), (16, 16), (1, 1))
-    Ai_11_32 = tl.insert_slice(Ai_11_32, Ai_21, (16, 0), (16, 16), (1, 1))
+    Ai_11_32 = extension.insert_slice(Ai_11_32, Ai_11, (0, 0), (16, 16), (1, 1))
+    Ai_11_32 = extension.insert_slice(Ai_11_32, Ai_22, (16, 16), (16, 16), (1, 1))
+    Ai_11_32 = extension.insert_slice(Ai_11_32, Ai_21, (16, 0), (16, 16), (1, 1))
 
     Ai_21_32 = -tl.dot(tmp, Ai_11_32, input_precision="ieee")
 
