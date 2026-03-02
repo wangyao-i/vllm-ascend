@@ -61,6 +61,11 @@ set(VLLM_ASCEND_CUSTOM_OP
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/batch_matmul_transpose/op_kernel/batch_matmul_transpose_kernel.cpp
 )
 
+set(VLLM_ASCEND_CUSTOM_OP_ASCEND950
+    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/mla_preprocess/op_kernel/mla_preprocess_kernel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/csrc/batch_matmul_transpose/op_kernel/batch_matmul_transpose_kernel.cpp
+)
+
 set(VLLM_ASCEND_CUSTOM_OP_EXCLUDE
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels/bgmv_expand.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels/bgmv_shrink.cpp
@@ -74,6 +79,11 @@ if(SOC_VERSION MATCHES "ascend310p.*")
     message(STATUS "310P hardware detected: disabling MLAPO operators")
     message(STATUS "310P hardware detected: excluding batch_matmul_transpose operators")
     list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_EXCLUDE})
+endif()
+
+if(SOC_VERSION MATCHES "ascend950")
+    list(REMOVE_ITEM VLLM_ASCEND_CUSTOM_OP ${VLLM_ASCEND_CUSTOM_OP_ASCEND950})
+    add_compile_definitions(_ASCEND950)
 endif()
 
 ascendc_library(vllm_ascend_kernels SHARED
