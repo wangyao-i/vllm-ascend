@@ -22,6 +22,7 @@ import torch_npu
 from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention  # type: ignore
 
 from vllm_ascend.utils import vllm_version_is
+import math
 
 MIN_PAD_SIZE: int = 64  # min_size to pad weight
 MAX_PAD_SIZE: int = 128  # max_size to pad weight
@@ -133,17 +134,19 @@ class AscendMMEncoderAttention(MMEncoderAttention):
 
         context_layer = torch.empty_like(q)
 
-        # operator requires pta version >= 2.5.1
-        torch_npu._npu_flash_attention_unpad(
+        dim = query.shape[-1]
+        scale = 1/math.sqrt(dim)
+
+        context_layer = torch_npu.npu_fusion_attention(
             query=q,
             key=k,
             value=v,
-            seq_len=seq_lens_cpu,
-            scale_value=self.scale_value,
-            num_heads=self.num_heads,
-            num_kv_heads=self.num_kv_heads,
-            out=context_layer,
-        )
+            actual_seq_qlen=list(seq_lens_cpu.cumsum(0)),
+            actual_seq_kvlen=list(seq_lens_cpu.cumsum(0)),
+            head_num=self.num_heads,
+            scale=scale,
+            input_layout="TND"
+        )[0]
 
         if self.enable_pad:
             context_layer = context_layer[..., :origin_shape]
