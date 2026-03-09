@@ -270,7 +270,7 @@ def _update_attn_fia_params(update_stream, forward_context, runtime_shape):
                 graph_params.events[runtime_shape],
         ):
             (query, key_cache, value, block_tables, attn_mask, block_size,
-             seq_lens, query_start_loc, num_kv_heads, num_heads, scale,
+             seq_lens, query_start_loc, num_kv_heads, num_heads, scale, key_scale, value_scale,
              attn_output, softmax_lse) = param
 
             seq_lens = forward_context.attn_metadata[key].seq_lens_list
@@ -291,6 +291,8 @@ def _update_attn_fia_params(update_stream, forward_context, runtime_shape):
                 num_heads=num_heads,
                 scale=scale,
                 sparse_mode=3,
+                key_antiquant_scale=key_scale,
+                value_antiquant_scale=value_scale,
                 workspace=graph_params.workspaces.get(runtime_shape),
                 out=[attn_output, softmax_lse],
             )

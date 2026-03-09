@@ -132,8 +132,10 @@ class AscendQuantConfig(QuantizationConfig):
             return AscendLinearMethod(self, prefix,
                                       self.packed_modules_mapping, layer)
         elif isinstance(layer, Attention) and \
-            'fa_quant_type' in self.quant_description.keys() and \
-            self.quant_description['fa_quant_type'] is not None:
+            (('fa_quant_type' in self.quant_description.keys() and \
+            self.quant_description['fa_quant_type'] is not None) or \
+             ('kv_cache_type' in self.quant_description.keys() and \
+              self.quant_description['kv_cache_type'] is not None)):
             return AscendKVCacheMethod(self, prefix)
         elif isinstance(layer, FusedMoE):
             if self.is_layer_skipped_ascend(prefix,

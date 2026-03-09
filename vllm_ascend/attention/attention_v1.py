@@ -326,12 +326,13 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
         self.key_cache = None
         self.value_cache = None
+        self.use_c8_quant = False
 
     def full_graph_fia(self, query: torch.Tensor, key: torch.Tensor,
                        value: torch.Tensor, attn_metadata: AscendMetadata,
-                       output: torch.Tensor) -> torch.Tensor:
-        key, value, block_size, block_table, actual_seq_lengths_kv \
-            = self._get_fia_params(key, value, attn_metadata)
+                       output: torch.Tensor, key_scale: torch.Tensor, value_scale: torch.Tensor) -> torch.Tensor:
+        key, value, block_size, block_table, actual_seq_lengths_kv, key_scale, value_scale, mask \
+            = self._get_fia_params(key, value, attn_metadata, key_scale, value_scale)
 
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
         forward_context = get_forward_context()
@@ -351,7 +352,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 query=query,
                 key=key,
                 value=value,
-                atten_mask=attn_metadata.attn_mask,
+                atten_mask=mask,
                 block_table=block_table,
                 input_layout="TND",
                 block_size=block_size,
@@ -361,6 +362,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_heads=self.num_heads,
                 sparse_mode=3,
                 scale=self.scale,
+                key_antiquant_scale=key_scale,
+                value_antiquant_scale=value_scale,
             )
             if forward_context.is_draft_model:
                 update_draft_graph_params_workspaces(num_tokens, workspace)
@@ -374,12 +377,21 @@ class AscendAttentionBackendImpl(AttentionImpl):
         event.wait(stream)
         event.reset(stream)
         graph_params.events[num_tokens].append(event)
-        graph_params.attn_params[num_tokens].append(
+        if self.use_c8_quant:
+            graph_params.attn_params[num_tokens].append(
+            (weak_ref_tensors(query), weak_ref_tensors(key),
+             weak_ref_tensors(value), weak_ref_tensors(block_table),
+             mask, block_size,
+             actual_seq_lengths_kv, actual_seq_lengths_q, self.num_kv_heads,
+             self.num_heads, self.scale, weak_ref_tensors(key_scale), weak_ref_tensors(value_scale), weak_ref_tensors(output),
+             weak_ref_tensors(softmax_lse)))
+        else:
+            graph_params.attn_params[num_tokens].append(
             (weak_ref_tensors(query), weak_ref_tensors(key),
              weak_ref_tensors(value), weak_ref_tensors(block_table),
              weak_ref_tensors(attn_metadata.attn_mask), block_size,
              actual_seq_lengths_kv, actual_seq_lengths_q, self.num_kv_heads,
-             self.num_heads, self.scale, weak_ref_tensors(output),
+             self.num_heads, self.scale, key_scale, value_scale, weak_ref_tensors(output),
              weak_ref_tensors(softmax_lse)))
 
         torch.npu.graph_task_group_begin(stream)
@@ -387,7 +399,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             query=query,
             key=key,
             value=value,
-            atten_mask=attn_metadata.attn_mask,
+            atten_mask=mask,
             block_table=block_table,
             input_layout="TND",
             block_size=block_size,
@@ -397,6 +409,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
             num_heads=self.num_heads,
             scale=self.scale,
             sparse_mode=3,
+            key_antiquant_scale=key_scale,
+            value_antiquant_scale=value_scale,
             workspace=workspace,
             out=[output, softmax_lse],
         )
@@ -469,11 +483,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
             return output
 
     def _get_fia_params(self, key: torch.Tensor, value: torch.Tensor,
-                        attn_metadata: AscendMetadata):
+                        attn_metadata: AscendMetadata,
+                        key_scale: torch.Tensor, value_scale: torch.Tensor):
+        mask = None
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
             block_size = 128
             block_table = None
             actual_seq_lengths_kv = attn_metadata.actual_seq_lengths_q
+            mask = attn_metadata.attn_mask
         elif attn_metadata.attn_state == \
                 AscendAttentionState.PrefillCacheHit:
             batch_size = attn_metadata.seq_lens.shape[0]
@@ -486,12 +503,13 @@ class AscendAttentionBackendImpl(AttentionImpl):
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
         elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
-            key = self.key_cache.view(  # type: ignore
-                num_block, block_size, -1)
-            value = self.value_cache.view(  # type: ignore
-                num_block, block_size, -1)
+            key = self.key_cache.flatten(start_dim=2)
+            value = self.value_cache.flatten(start_dim=2)
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
+            key_scale = key_scale.unsqueeze(0) if self.use_c8_quant else None
+            value_scale = value_scale.unsqueeze(0) if self.use_c8_quant else None
+            mask = attn_metadata.attn_mask if not self.use_c8_quant else None
         # chunked prefill.
         else:
             num_block, block_size, _, _ = self.key_cache.shape  # type: ignore
@@ -501,7 +519,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 num_block, block_size, -1)
             block_table = attn_metadata.block_tables
             actual_seq_lengths_kv = attn_metadata.seq_lens_list
-        return key, value, block_size, block_table, actual_seq_lengths_kv
+            key_scale = key_scale.unsqueeze(0) if self.use_c8_quant else None
+            value_scale = value_scale.unsqueeze(0) if self.use_c8_quant else None
+            mask = attn_metadata.attn_mask
+        return key, value, block_size, block_table, actual_seq_lengths_kv, key_scale, value_scale, mask
 
     def _forward_fia_slidingwindow(self, query: torch.Tensor,
                                    attn_metadata: AscendMetadata,
@@ -536,14 +557,16 @@ class AscendAttentionBackendImpl(AttentionImpl):
     def forward_fused_infer_attention(self, query: torch.Tensor,
                                       key: torch.Tensor, value: torch.Tensor,
                                       attn_metadata: AscendMetadata,
-                                      output: torch.Tensor):
+                                      output: torch.Tensor,
+                                      key_scale: torch.Tensor,
+                                      value_scale: torch.Tensor):
         forward_context: ForwardContext = get_forward_context()
         # we inherit ForwardContext in model runner v2, when enable model
         # runner v2, there is not capturing attribute in forward_context,
         # just use getattr to avoid attribute error.
         if getattr(forward_context, "capturing", False):
             attn_output, num_tokens = self.full_graph_fia(
-                query, key, value, attn_metadata, output)
+                query, key, value, attn_metadata, output, key_scale, value_scale)
             output[:num_tokens] = attn_output[:num_tokens]
             return output
         if (attn_metadata.attn_state == AscendAttentionState.DecodeOnly
@@ -551,8 +574,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 and attn_metadata.seq_lens.shape[0] == query.size(0)):
             return self._forward_fia_slidingwindow(query, attn_metadata,
                                                    output)
-        key, value, block_size, block_table, actual_seq_lengths_kv \
-            = self._get_fia_params(key, value, attn_metadata)
+        key, value, block_size, block_table, actual_seq_lengths_kv, key_scale, value_scale, mask \
+            = self._get_fia_params(key, value, attn_metadata, key_scale, value_scale)
         num_tokens = attn_metadata.actual_seq_lengths_q[-1]
         query = query[:num_tokens]
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
@@ -567,7 +590,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             if self.sliding_window else SWA_INT_MAX,
             next_tokens=0 if self.sliding_window else SWA_INT_MAX,
             atten_mask=attn_metadata.swa_mask
-            if self.sliding_window else attn_metadata.attn_mask,
+            if self.sliding_window else mask,
             block_table=block_table,
             input_layout="TND",
             block_size=block_size,
@@ -577,6 +600,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
             num_heads=self.num_heads,
             scale=self.scale,
             sparse_mode=4 if self.sliding_window else 3,
+            key_antiquant_scale=key_scale,
+            value_antiquant_scale=value_scale,
         )
 
         attn_output = attn_output.view(num_tokens, self.num_heads,
@@ -676,6 +701,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
         kv_cache: Tuple[torch.Tensor],
         attn_metadata: AscendMetadata,
         output: torch.Tensor,
+        key_scale: torch.Tensor,
+        value_scale: torch.Tensor,
     ):
         num_tokens = query.shape[0]
         if (attn_metadata.attn_state == AscendAttentionState.DecodeOnly
@@ -684,7 +711,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             output = self.forward_paged_attention(query, attn_metadata, output)
         else:
             output = self.forward_fused_infer_attention(
-                query, key, value, attn_metadata, output)
+                query, key, value, attn_metadata, output, key_scale, value_scale)
 
         return output
 
@@ -729,8 +756,33 @@ class AscendAttentionBackendImpl(AttentionImpl):
         num_tokens = query.shape[0]
         if attn_metadata is None:
             return output.fill_(0)
-        key, value = self.reshape_and_cache(key, value, kv_cache,
-                                            attn_metadata)
+        self.use_c8_quant = hasattr(layer, 'quant_method')
+        self.use_c8_quant = False
+
+        key_scale = None
+        value_scale = None
+        if self.use_c8_quant:
+            key, value, key_scale, value_scale = layer.quant_method.apply(
+                layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                self.scale,
+                output,
+                attn_metadata.block_tables,
+                )
+            if self.key_cache is None:
+                self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+            torch_npu.npu_scatter_pa_kv_cache(key=key[:attn_metadata.actual_seq_lengths_q[-1]],
+                                              value=value[:attn_metadata.actual_seq_lengths_q[-1]],
+                                              slot_mapping=attn_metadata.slot_mapping[:attn_metadata.actual_seq_lengths_q[-1]],
+                                              key_cache=self.key_cache,
+                                              value_cache=self.value_cache)
+        else:
+            key, value = self.reshape_and_cache(key, value, kv_cache,
+                                                attn_metadata)
         # pooling model branch
         if attn_metadata.model_runner_type == "pooling":
             attn_output = self._forward_encoder_attention(
@@ -738,5 +790,5 @@ class AscendAttentionBackendImpl(AttentionImpl):
             output[:num_tokens] = attn_output[:num_tokens]
             return output
         output = self.forward_impl(query, key, value, kv_cache, attn_metadata,
-                                   output)
+                                   output, key_scale, value_scale)
         return output
