@@ -17,6 +17,7 @@ from .w8a8_pdmix import (AscendW8A8PDMixFusedMoeMethod,
 from .w8a16 import AscendW8A16LinearMethod
 from .w8a8mxfp8 import (AscendW8A8MXFP8DynamicLinearMethod,
                         AscendW8A8MXFP8DynamicFusedMoEMethod)
+from .c8quant import AscendC8KVCacheMethod
 
 ASCEND_QUANTIZATION_METHOD_MAP: Dict[str, Dict[str, Type[Any]]] = {
     "W4A16": {
@@ -47,6 +48,9 @@ ASCEND_QUANTIZATION_METHOD_MAP: Dict[str, Dict[str, Type[Any]]] = {
         "linear": AscendW8A8MXFP8DynamicLinearMethod,
         "moe": AscendW8A8MXFP8DynamicFusedMoEMethod,
     },
+    "C8_FP": {
+        "attention": AscendC8KVCacheMethod
+    }
 }
 
 
@@ -104,6 +108,10 @@ def get_quant_method_modelslim(
     # Attention
     if '.attn' in prefix and 'fa_quant_type' in quant_description.keys():
         quant_type = quant_description['fa_quant_type']
+    # C8 
+    # qwen VL vit is not supported
+    if '.attn' in prefix and 'kv_cache_type' in quant_description.keys() and 'visual.' not in prefix:
+        quant_type = quant_description['kv_cache_type']
     # Linear
     else:
         quant_type = get_linear_quant_type(quant_description, prefix,

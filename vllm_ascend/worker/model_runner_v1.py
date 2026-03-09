@@ -2792,11 +2792,16 @@ class NPUModelRunner(GPUModelRunner):
                 # TODO(lucas): move the attention specs into the model layers like
                 # the attention backends
                 if attn_module.attn_type == AttentionType.DECODER:
+                    # 在kvcache伪量化场景，需要获取kvcache的类型用于初始化kvcache
+                    try:
+                        kv_cache_dtype = attn_module.quant_method.quant_method.kv_cache_type
+                    except AttributeError:
+                        kv_cache_dtype = attn_module.dtype
                     kv_cache_spec[layer_name] = FullAttentionSpec(
                         block_size=block_size,
                         num_kv_heads=attn_module.num_kv_heads,
                         head_size=attn_module.head_size,
-                        dtype=self.kv_cache_dtype)
+                        dtype=kv_cache_dtype)
                 elif attn_module.attn_type in (AttentionType.ENCODER,
                                                AttentionType.ENCODER_ONLY):
                     # encoder-only attention does not need KV cache.
