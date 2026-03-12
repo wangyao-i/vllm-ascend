@@ -23,10 +23,10 @@ from vllm.triton_utils import HAS_TRITON
 
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.device.device_op import DeviceOperator
-from vllm_ascend.device.mxfp_compat import (
+from vllm_ascend.ops.activation import AscendSwigluOAIAndMul
+from vllm_ascend.quantization.mxfp_compat import (
     ensure_mxfp8_moe_available,
 )
-from vllm_ascend.ops.activation import AscendSwigluOAIAndMul
 from vllm_ascend.utils import (
     dispose_tensor,
     enable_custom_op,
@@ -167,9 +167,9 @@ def quant_apply_mlp(
             # gmm1: gate_up_proj & act_fn: swiglu
             hidden_states, swiglu_out_scale, _ = DeviceOperator.npu_grouped_matmul_swiglu_quant(
                 x=hidden_states,
-                weight=_require_single_tensor_for_swiglu_quant(w1, name="w1"),
+                weight=w1,
                 group_list=cumsum_group_list(group_list, group_list_type, 0),
-                weight_scale=_require_single_tensor_for_swiglu_quant(w1_scale, name="w1_scale"),
+                weight_scale=w1_scale,
                 x_scale=pertoken_scale,
                 bias=None,
                 use_mxfp_quant=use_mxfp_quant,
@@ -272,11 +272,12 @@ def quant_apply_mlp(
         elif use_gmm_swiglu_quant_fusion:
             hidden_states, swiglu_out_scale, _ = DeviceOperator.npu_grouped_matmul_swiglu_quant(
                 x=hidden_states,
-                weight=_require_single_tensor_for_swiglu_quant(w1, name="w1"),
+                weight=w1,
                 group_list=cumsum_group_list(group_list, group_list_type, 0),
-                weight_scale=_require_single_tensor_for_swiglu_quant(w1_scale, name="w1_scale"),
+                weight_scale=w1_scale,
                 x_scale=pertoken_scale,
                 bias=bias1,
+                group_list_type=group_list_type,
                 use_mxfp_quant=use_mxfp_quant,
             )
             if quantized_hidden_states is not None:
