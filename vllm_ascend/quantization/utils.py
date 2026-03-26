@@ -17,6 +17,8 @@ from .w8a8_pdmix import (AscendW8A8PDMixFusedMoeMethod,
 from .w8a16 import AscendW8A16LinearMethod
 from .w8a8mxfp8 import (AscendW8A8MXFP8DynamicLinearMethod,
                         AscendW8A8MXFP8DynamicFusedMoEMethod)
+from .w4a8mxfp import (AscendW4A8MXFPDynamicLinearMethod,
+                        AscendW4A8MXFPDynamicFusedMoEMethod)
 
 ASCEND_QUANTIZATION_METHOD_MAP: Dict[str, Dict[str, Type[Any]]] = {
     "W4A16": {
@@ -46,6 +48,10 @@ ASCEND_QUANTIZATION_METHOD_MAP: Dict[str, Dict[str, Type[Any]]] = {
     "W8A8_MXFP8": {
         "linear": AscendW8A8MXFP8DynamicLinearMethod,
         "moe": AscendW8A8MXFP8DynamicFusedMoEMethod,
+    },
+    "W4A8_MXFP": {
+        "linear": AscendW4A8MXFPDynamicLinearMethod,
+        "moe": AscendW4A8MXFPDynamicFusedMoEMethod,
     },
 }
 
