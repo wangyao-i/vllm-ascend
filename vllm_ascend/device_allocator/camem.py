@@ -53,22 +53,22 @@ def find_loaded_library(lib_name) -> str | None:
 
 
 camem_available = False
-try:
-    from vllm_ascend.vllm_ascend_C import (  # type: ignore # noqa: F401
-        init_module,
-        python_create_and_map,
-        python_unmap_and_release,
-    )
+# try:
+#     from vllm_ascend.vllm_ascend_C import (  # type: ignore # noqa: F401
+#         init_module,
+#         python_create_and_map,
+#         python_unmap_and_release,
+#     )
 
-    lib_name = find_loaded_library("vllm_ascend_C")
-    camem_available = True
-except ImportError as e:
-    logger.warning("Failed to import vllm_ascend_C:%s. Sleep mode will be disabled. ", e)
-    init_module = None
-    python_create_and_map = None
-    python_unmap_and_release = None
-    lib_name = None
-    libcudart = None
+#     lib_name = find_loaded_library("vllm_ascend_C")
+#     camem_available = True
+# except ImportError as e:
+#     logger.warning("Failed to import vllm_ascend_C:%s. Sleep mode will be disabled. ", e)
+init_module = None
+python_create_and_map = None
+python_unmap_and_release = None
+lib_name = None
+libcudart = None
 
 # py_device, py_alignedSize, py_d_mem, py_p_memHandle
 HandleType = tuple[int, int, int, int]
