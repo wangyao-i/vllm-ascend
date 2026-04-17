@@ -398,7 +398,7 @@ class EplbConfig:
 
     def _validate_config(self):
         if self.expert_map_path is not None:
-            logger.info(f"The expert_map is {self.config['dynamic_eplb']}")
+            logger.info(f"The expert_map is {self.config['expert_map_path']}")
             if self.expert_map_path[-5:] != ".json":
                 raise TypeError("The expert_map is not json.")
             if not os.path.exists(self.expert_map_path):

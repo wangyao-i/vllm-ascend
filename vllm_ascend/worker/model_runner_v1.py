@@ -2562,7 +2562,7 @@ class NPUModelRunner(GPUModelRunner):
 
         with DeviceMemoryProfiler() as m:  # noqa: SIM117
             if self.eplb_enable:
-                self.vllm_config.parallel_config.enable_eplb = True
+                self.vllm_config.parallel_config.enable_eplb = False
             self.model: nn.Module = get_model(vllm_config=self.vllm_config)
             if self.dynamic_eplb:
                 model_register(self.model)

@@ -73,8 +73,8 @@ def init_eplb_config(eplb_config, layer_id, moe_config):
         global_placement, physical_count = expert_file_to_tensor(expert_map_path, layer_id)
         if physical_count is not None:
             n_redundant = physical_count - n_experts
-            if not moe_config.supports_eplb:
-                raise ValueError("Eplb supports only w8a8_dynamic quantization.")
+            # if not moe_config.supports_eplb:
+            #     raise ValueError("Eplb supports only w8a8_dynamic quantization.")
         else:
             eplb_enable = False
     elif not eplb_enable:
