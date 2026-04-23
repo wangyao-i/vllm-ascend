@@ -532,10 +532,10 @@ class NPUModelRunner(GPUModelRunner):
 
         flags_tensor = torch.tensor([int(with_prefill)], dtype=torch.int32, device="cpu")
 
-        packed_tensor = torch.cat([num_tokens_tensor, flags_tensor])
+        packed_tensor = torch.cat([num_tokens_tensor, flags_tensor]).npu()
         # use cpu_group to avoid cpu synchronization issue.
         # it can be overlapped with main moell execution on npu.
-        dist.all_reduce(packed_tensor, group=get_dp_group().cpu_group)
+        dist.all_reduce(packed_tensor, group=get_dp_group().device_group)
 
         # Unpack the results
         num_tokens_across_dp = packed_tensor[:-1]
@@ -1894,7 +1894,8 @@ class NPUModelRunner(GPUModelRunner):
         tensor = torch.zeros(2, self.dp_size, device="cpu", dtype=torch.int32)
         tensor[0][self.dp_rank] = num_tokens_padded
         tensor[1][self.dp_rank] = cudagraph_mode
-        dist.all_reduce(tensor, group=get_dp_group().cpu_group)
+        tensor = tensor.npu()
+        dist.all_reduce(tensor, group=get_dp_group().device_group)
 
         num_tokens_across_dp = tensor[0, :]
         max_num_tokens = int(num_tokens_across_dp.max().item())
@@ -3423,3 +3424,4 @@ def update_pass_config(model_runner):
         yield
     finally:
         model_runner.compilation_config.pass_config.enable_sp = original_pass_config_sp
+
