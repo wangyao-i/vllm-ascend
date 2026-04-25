@@ -59,7 +59,7 @@ def init_eplb_config(eplb_config, layer_id, moe_config):
     n_experts = moe_config.num_experts
     ep_size = moe_config.ep_size
     global_placement = None
-    eplb_enable = eplb_config.dynamic_eplb
+    eplb_enable = eplb_config.dynamic_eplb or expert_map_path is not None
     n_redundant = eplb_config.num_redundant_experts if eplb_enable else 0
 
     if ep_size == 1:
@@ -69,14 +69,11 @@ def init_eplb_config(eplb_config, layer_id, moe_config):
     if expert_map_path:
         if not (os.path.exists(expert_map_path) and os.access(expert_map_path, os.R_OK)):
             raise ValueError("Invalid EPLB path")
-        eplb_enable = True
         global_placement, physical_count = expert_file_to_tensor(expert_map_path, layer_id)
         if physical_count is not None:
             n_redundant = physical_count - n_experts
             # if not moe_config.supports_eplb:
             #     raise ValueError("Eplb supports only w8a8_dynamic quantization.")
-        else:
-            eplb_enable = False
     elif not eplb_enable:
         _, expert_map, _ = determine_expert_map(ep_size, moe_config.ep_rank, n_experts)
         return None, expert_map, None, 0
