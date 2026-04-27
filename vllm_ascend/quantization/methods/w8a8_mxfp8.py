@@ -22,7 +22,7 @@ import torch
 import torch_npu
 from vllm.config import CompilationMode, get_current_vllm_config
 from vllm.distributed import get_ep_group
-from vllm_ascend import maybe_trans_nz
+from vllm_ascend.utils import maybe_trans_nz
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.device.mxfp_compat import (
