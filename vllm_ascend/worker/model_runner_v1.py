@@ -131,6 +131,8 @@ from vllm_ascend.utils import (
     lmhead_tp_enable,
     set_weight_prefetch_method,
     should_skip_allreduce_across_dp_group,
+    get_ascend_device_type,
+    AscendDeviceType
 )
 from vllm_ascend.worker.npu_input_batch import NPUInputBatch
 from vllm_ascend.worker.pcp_utils import PCPManager
@@ -2972,6 +2974,10 @@ class NPUModelRunner(GPUModelRunner):
                             k_tensor_split_factor, v_tensor_split_factor = (
                                 self.vllm_config.quant_config.get_kv_quant_split_factor(layer_name, kv_head_dim_list)
                             )
+                        elif get_ascend_device_type() == AscendDeviceType.A5 and enable_fa_quant(self.vllm_config):
+                            k_tensor_split_factor, v_tensor_split_factor = (
+                                self.vllm_config.quant_config.get_kv_quant_split_factor(layer_name, kv_head_dim_list)
+                            )
                         else:
                             k_tensor_split_factor, v_tensor_split_factor = calc_split_factor(kv_head_dim_list)
 
@@ -3157,6 +3163,10 @@ class NPUModelRunner(GPUModelRunner):
                         )
                     k_cache_dtype = v_cache_dtype = current_kv_cache_spec.dtype
                     if self.is_kv_consumer and enable_fa_quant(self.vllm_config):
+                        k_cache_dtype, v_cache_dtype = self.vllm_config.quant_config.get_kv_quant_dtype(
+                            layer_name, current_kv_cache_spec.dtype, self.model_config
+                        )
+                    elif get_ascend_device_type() == AscendDeviceType.A5 and enable_fa_quant(self.vllm_config):
                         k_cache_dtype, v_cache_dtype = self.vllm_config.quant_config.get_kv_quant_dtype(
                             layer_name, current_kv_cache_spec.dtype, self.model_config
                         )
