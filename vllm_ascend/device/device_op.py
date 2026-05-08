@@ -552,7 +552,7 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
             cache_kv_c,
             cache_k_pe,
             block_table,
-            context_seq_len_npu,
+            context_seq_len_npu.contiguous(),
             seq_offset=seq_offset,
             key=key,
             value=value,
