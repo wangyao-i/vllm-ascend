@@ -321,7 +321,8 @@ def _native_select_experts(
         return topk_weights, topk_ids
 
     topk_weights, topk_ids = topk_weights.topk(top_k, dim=-1)
-    topk_weights = topk_weights.to(hidden_states.dtype)
+    if hidden_states.dtype not in [torch.float8_e4m3fn]:
+        topk_weights = topk_weights.to(hidden_states.dtype)
 
     # Required by npu_moe_init_routing
     topk_ids = topk_ids.to(torch.int32)
