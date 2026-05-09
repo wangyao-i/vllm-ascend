@@ -278,6 +278,7 @@ class TokenDispatcherWithMC2(MoETokenDispatcher[MoEMC2CombineMetadata]):
             "shared_expert_rank_num": 0,
             "moe_expert_num": self.moe_expert_num,
             "global_bs": self.global_bs,
+            "comm_quant_mode": 4,
         }
         if self.global_bs == 0:
             kwargs_mc2["x_active_mask"] = combine_metadata.mc2_mask
