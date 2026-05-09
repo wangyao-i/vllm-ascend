@@ -1,6 +1,7 @@
 import torch
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+from vllm_ascend.utils import get_ascend_device_type, AscendDeviceType
 
 from .base import AscendAttentionScheme
 from .registry import register_scheme
@@ -57,7 +58,10 @@ class AscendFAQuantAttentionMethod:
         fa_k_scale = torch.squeeze(layer.fa_k.scale).unsqueeze(0)
         layer.fak_descale_float = torch.nn.Parameter(fa_k_scale.to(torch.float), requires_grad=False)
         layer.fak_descale = torch.nn.Parameter(fa_k_scale, requires_grad=False)
-        layer.fak_descale_reciprocal = 1.0 / torch.nn.Parameter(fa_k_scale, requires_grad=False)
+        if get_ascend_device_type() == AscendDeviceType.A5:
+            layer.fak_descale_reciprocal = 1.0 / torch.nn.Parameter(fa_k_scale.to(torch.float), requires_grad=False)
+        else:
+            layer.fak_descale_reciprocal = 1.0 / torch.nn.Parameter(fa_k_scale, requires_grad=False)
         fa_k_offset = torch.squeeze(layer.fa_k.offset).unsqueeze(0)
         layer.fak_offset = torch.nn.Parameter(fa_k_offset.to(layer.fak_descale.dtype), requires_grad=False)
 
