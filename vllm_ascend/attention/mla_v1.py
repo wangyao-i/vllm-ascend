@@ -890,11 +890,7 @@ class AscendMLAImpl(MLAAttentionImpl):
 
     def _v_up_proj(self, x):
         # Convert from (N, B, L)/(N, B, 1, L) to (N, B, L)
-        if self.fa_quant_layer and get_ascend_device_type() == AscendDeviceType.A5:
-            x = x.squeeze(dim=-2) 
-            x = x.permute(1,0,2).contiguous()
-        else:
-            x = x.view(self.num_heads, -1, self.kv_lora_rank)
+        x = x.view(self.num_heads, -1, self.kv_lora_rank)
         # Multiply (N, B, L) x (N, L, V) -> (B, N, V)
         x = torch_npu.npu_transpose_batchmatmul(x, self.W_UV, perm_y=(1, 0, 2))
         # Convert from (B, N, V) to (B, N * V)
@@ -1452,10 +1448,12 @@ class AscendMLAImpl(MLAAttentionImpl):
         elif self.fa_quant_layer:
             q_nope = q_nope.view(num_tokens, self.num_heads, 1, -1).contiguous()
             q_pe = q_pe.view(num_tokens, self.num_heads, 1, -1)
+            dequant_scale_q_nope = dequant_scale_q_nope.view(num_tokens, self.num_heads, 1)
             attn_mask = None
             input_layout = "BNSD"
             sparse_mode = 0
             actual_seq_lengths = None
+            attn_output_shape = (num_tokens, self.num_heads, 1, self.kv_lora_rank)
         else:
             # The output layout is set to NBSD to eliminate the need for a
             # transpose operation after attention.
@@ -1593,10 +1591,14 @@ class AscendMLAImpl(MLAAttentionImpl):
         sin = attn_metadata.decode.sin
         decode_ql_nope, decode_q_pe = self._q_proj_and_k_up_proj(decode_q_c)
         decode_q_pe = self.rope_single(decode_q_pe, cos, sin)
+        dequant_scale_q_nope = None
+        if self.fa_quant_layer and get_ascend_device_type() == AscendDeviceType.A5:
+            decode_ql_nope, dequant_scale_q_nope = torch_npu.npu_dynamic_quant(decode_ql_nope,dst_type=torch.float8_e4m3fn)
+            decode_q_pe = (decode_q_pe / dequant_scale_q_nope.unsqueeze(-1) / self.fak_descale_float).to(torch.bfloat16)
         decode_slots = attn_metadata.slot_mapping[:num_decode_tokens:1]
         decode_kv_no_split = kv_no_split[:num_decode_tokens]
         decode_k_pe, decode_k_nope = self.exec_kv_decode(decode_kv_no_split, cos, sin, kv_cache, decode_slots)
-        return DecodeMLAPreprocessResult(decode_ql_nope, decode_q_pe, decode_k_nope, decode_k_pe)
+        return DecodeMLAPreprocessResult(decode_ql_nope, decode_q_pe, decode_k_nope, decode_k_pe, dequant_scale_q_nope=dequant_scale_q_nope)
 
     def _mla_preprocess(self, layer_name, hidden_states, kv_cache, attn_metadata, need_gather_q_kv):
         # MLA Preprocess:
