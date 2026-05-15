@@ -69,4 +69,4 @@ public:
     }
 };
 OP_ADD(AddRmsNormBias);
-} // namespace ops 
+} // namespace ops
