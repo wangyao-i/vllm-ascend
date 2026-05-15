@@ -66,6 +66,10 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]]; then
     )
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
     SOC_ARG="ascend910_93"
+elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
+    # ASCEND950 (A5) series
+    CUSTOM_OPS="add_rms_norm_bias"
+    SOC_ARG="ascend950"
 else
     # others
     # currently, no custom aclnn ops for other series

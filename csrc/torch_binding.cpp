@@ -1049,6 +1049,15 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "sgmv_expand(Tensor! x, Tensor! weight, Tensor! lora_indices, Tensor! seq_len, Tensor! y,"
         "            int slice_offset, int slice_size) -> Tensor");
     ops.impl("sgmv_expand", torch::kPrivateUse1, &vllm_ascend::sgmv_expand);
+    ops.def(
+        "npu_add_rms_norm_bias(Tensor x1, "
+                            "Tensor x2, "
+                            "Tensor gamma, "
+                            "Tensor? beta=None, "
+                            "float epsilon=1e-6)"
+        "-> (Tensor y ,Tensor rstd, Tensor x)"
+        );
+    ops.impl("npu_add_rms_norm_bias", torch::kPrivateUse1, &vllm_ascend::npu_add_rms_norm_bias);
 
 }
 #else
