@@ -76,7 +76,7 @@ class VllmEplbAdaptor:
         #     else:
         #         raise ValueError(f"EPLB not support {quant_type}")
         # else:
-        self.expert_weight_names = ["w13_weight", "w2_weight"]
+        self.expert_weight_names = ["w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"]
 
         for layer_idx in range(self.num_dense_layers, self.model.config.num_hidden_layers):
             self.expert_param_per_layer[layer_idx] = list()
@@ -132,7 +132,7 @@ class VllmEplbAdaptor:
 
     def do_update_log2phy_map(self, layer_id, updated_log2phy_map):
         if self.log2phy_map_per_layer[layer_id] is not None:
-            self.log2phy_map_per_layer[layer_id].copy_(updated_log2phy_map)
+            self.log2phy_map_per_layer[layer_id].copy_(updated_log2phy_map, non_blocking=True)
 
     def get_global_expert_map(self):
         all_layer_global_expert_map = []

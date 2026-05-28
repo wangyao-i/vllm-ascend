@@ -72,7 +72,7 @@ class D2DExpertWeightLoader:
         self.state = ExpertWeightUpdateState.READY
 
     def set_log2phy_map(self, log2phy_map):
-        self.updated_log2phy_map = log2phy_map
+        self.updated_log2phy_map = log2phy_map.pin_memory()
 
     def asyn_expert_weight_transfer(self, reqs):
         # Only when send/recv tasks are parsed into self.comm_op_list, d2d send/recv tasks can be launched
@@ -81,7 +81,9 @@ class D2DExpertWeightLoader:
 
         # set asynchronous stream for d2d expert weight transfer
         if self.comm_op_list:
+            #logger.info("[EPLB] The launch of batch_isend_irecv starts.")
             ret_list = dist.batch_isend_irecv(self.comm_op_list)
+            #logger.info("[EPLB] The launch of batch_isend_irecv ends.")
             reqs.extend(ret_list)
 
         self.state = ExpertWeightUpdateState.TRANSFERRING
@@ -93,7 +95,9 @@ class D2DExpertWeightLoader:
 
         # Waiting for send/recv tasks finish
         for req in reqs:
+            #logger.info("[EPLB] The req.wait() starts.")
             req.wait()
+            #logger.info("[EPLB] The req.wait() ends.")
 
         if self.comm_op_list is not None:
             self.comm_op_list = None
