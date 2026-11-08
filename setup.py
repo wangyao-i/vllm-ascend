@@ -115,7 +115,7 @@ def get_chip_type() -> str:
                 # A3 case
                 assert npu_name
                 return (chip_name + "_" + npu_name).lower()
-        elif "950" in chip_name:
+        elif "950" in chip_name or "960" in chip_name:
             assert npu_name
             return (chip_name + "_" + npu_name).lower()
         elif "a2g3" in chip_name.lower():
