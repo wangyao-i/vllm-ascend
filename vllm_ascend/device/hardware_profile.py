@@ -413,6 +413,21 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                 }
             ),
         ),
+        # Ascend960 (A6): new device family. Starts from the standard
+        # capability set; capabilities are enabled incrementally as they are
+        # validated on real hardware.
+        AscendDeviceType.A6: HardwareProfile(
+            _device_type=AscendDeviceType.A6,
+            attention_backend_family=AttentionBackendFamily.STANDARD,
+            cpu_binding_mode=CPUBindingMode.TOPO_AFFINITY,
+            default_worker_cls=_DEFAULT_WORKER_CLS,
+            device_adaptor_family=DeviceAdaptorFamily.STANDARD,
+            device_addressing_mode=DeviceAddressingMode.DIRECT,
+            weight_layout_policy=WeightLayoutPolicy.CONFIGURABLE,
+            moe_comm_policy=MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,
+            quantization_backend_family=QuantizationBackendFamily.STANDARD,
+            capabilities=_STANDARD_CAPABILITIES,
+        ),
     }
 )
 
