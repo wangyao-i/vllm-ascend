@@ -20,6 +20,7 @@ class AscendDeviceType(Enum):
     A3 = 1
     _310P = 2
     A5 = 3
+    A6 = 4
 
 
 _SOC_VERSION_TO_DEVICE_TYPE = {
@@ -56,6 +57,8 @@ def device_type_from_soc_version(soc_version: str) -> AscendDeviceType:
     normalized = soc_version.strip().lower()
     if "ascend950" in normalized:
         return AscendDeviceType.A5
+    if "ascend960" in normalized:
+        return AscendDeviceType.A6
     try:
         return _SOC_VERSION_TO_DEVICE_TYPE[normalized]
     except KeyError as exc:
@@ -73,4 +76,6 @@ def device_type_from_runtime_soc(soc_version: int) -> AscendDeviceType:
         return AscendDeviceType._310P
     if soc_version == 260:
         return AscendDeviceType.A5
+    if soc_version == 270:
+        return AscendDeviceType.A6
     raise RuntimeError(f"Cannot support runtime soc_version: {soc_version}.")
