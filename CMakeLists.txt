@@ -1,5 +1,37 @@
 cmake_minimum_required(VERSION 3.16)
-project(vllm_ascend_C)
+
+# A6-ASC-FUSION: the ASC toolchain registers the ASC language (bisheng as the
+# compiler driver) so the kernel sources below can build for dav cores the
+# legacy ascendc.cmake route cannot describe. It must run before project(),
+# because CMake only accepts languages that were registered beforehand.
+#
+# find_package(ASC) loads CANN's asc-config.cmake, which already aborts with a
+# clear message when ASCEND_HOME_PATH is unset or missing. What it does not
+# report is a package that resolved without registering the language, so check
+# the module's own loaded flag before handing ASC to project().
+find_package(ASC)
+if(NOT _ASC_MODULE_LOADED)
+    message(FATAL_ERROR
+        "find_package(ASC) did not load CANN's asc-config.cmake, so the ASC "
+        "language is not registered and the kernel sources cannot be "
+        "compiled. Ensure ASCEND_HOME_PATH points at a CANN install that ships "
+        "ascendc_kernel_cmake (CANN 9.2.0+ for this tree) and source both "
+        "ascend-toolkit/set_env.sh and driver/bin/setenv.bash.")
+endif()
+
+project(vllm_ascend_C ASC CXX)
+
+# CMakeDetermineASCCompiler.cmake locates bisheng while project() resolves the
+# language; surface it so a toolchain without a usable compiler fails here
+# rather than deep inside the kernel build.
+if(NOT CMAKE_ASC_COMPILER)
+    message(FATAL_ERROR
+        "The ASC language was registered but no ASC compiler was found. "
+        "CMakeDetermineASCCompiler.cmake looks for bisheng under "
+        "ASCEND_CANN_PACKAGE_LINUX_PATH/ccec_compiler/bin, PATH and "
+        "ASCEND_HOME_PATH.")
+endif()
+message(STATUS "ASC compiler: ${CMAKE_ASC_COMPILER}")
 
 # include(CheckCXXcompilerFlag)
 # check_cxx_compiler_flag("-std=c++17", COMPILER_SUPPORTS_CXX17)
@@ -38,18 +70,15 @@ if (CMAKE_INSTALL_PREFIX STREQUAL /usr/local)
   set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_LIST_DIR}/out" CACHE STRINGS "path to install()")
 endif()
 
+# A6-ASC-FUSION: the legacy ascendc.cmake discovery is gone; the kernel target
+# below is built by the ASC toolchain that find_package(ASC) set up above.
+# The legacy route cannot serve A6 for two reasons. First, its host_config.cmake
+# lowercases SOC_VERSION and then membership-tests it against the camelCase
+# ascend960DT_list, so every ascend960DT_* value falls through to the
+# FATAL_ERROR branch. Second, even when matched it maps A6 onto BUILD_MODE
+# 310r6, while A6 pairs 64 cube:64 vector cores with cube_vector_combine=fuse
+# and 310r6 does not describe that pairing.
 set(ASCEND_CANN_PACKAGE_PATH ${ASCEND_HOME_PATH})
-if(EXISTS ${ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake)
-    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/tools/tikcpp/ascendc_kernel_cmake)
-elseif(EXISTS ${ASCEND_HOME_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
-    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/compiler/tikcpp/ascendc_kernel_cmake)
-elseif(EXISTS ${ASCEND_HOME_PATH}/ascendc_devkit/tikcpp/samples/cmake)
-    set(ASCENDC_CMAKE_DIR ${ASCEND_HOME_PATH}/ascendc_devkit/tikcpp/samples/cmake)
-else()
-    message(FATAL_ERROR "ascendc_kernel_cmake does not exist, please check whether the cann package is installed.")
-endif()
-
-include(${ASCENDC_CMAKE_DIR}/ascendc.cmake)
 
 file(GLOB KERNEL_FILES
 ${CMAKE_CURRENT_SOURCE_DIR}/csrc/kernels/*.cpp)
@@ -58,12 +87,42 @@ set(VLLM_ASCEND_CUSTOM_OP
     ${KERNEL_FILES}
 )
 
+# A6-ASC-FUSION: map SOC_VERSION to the dav core the ASC compiler expects.
+# Every pattern must be a real prefix of an entry in CANN's SoC lists
+# (host_config.cmake): ascend960DT_list, ascend950_list, ascend910b_list - which
+# also carries the ascend910_93xx variants - and ascend910_list. MATCHES is an
+# unanchored regex, so a pattern that is a prefix of an earlier branch is
+# unreachable; keep the branches ordered from most to least specific.
+# A2/A3/A5 therefore keep the same dav cores the legacy BUILD_MODE mapping gave
+# them, and only A6 adds a new one.
+if(SOC_VERSION MATCHES "ascend960")
+    set(VLLM_ASCEND_ASC_NPU_ARCH "dav-9201")
+elseif(SOC_VERSION MATCHES "ascend950")
+    set(VLLM_ASCEND_ASC_NPU_ARCH "dav-c310")
+elseif(SOC_VERSION MATCHES "ascend910_93|ascend910b")
+    set(VLLM_ASCEND_ASC_NPU_ARCH "dav-c220")
+elseif(SOC_VERSION MATCHES "ascend910")
+    set(VLLM_ASCEND_ASC_NPU_ARCH "dav-c100")
+endif()
+
 if(SOC_VERSION MATCHES "ascend310p.*|ascend950")
     message(STATUS "Hardware ${SOC_VERSION} detected: skip vllm_ascend_kernels compile")
 else()
-    ascendc_library(vllm_ascend_kernels SHARED
+    # A6-ASC-FUSION: mark the kernel sources as the ASC language, then build
+    # them as an ordinary CMake target compiled for the target dav core.
+    set_source_files_properties(
+        ${VLLM_ASCEND_CUSTOM_OP}
+        PROPERTIES LANGUAGE ASC
+    )
+    add_library(vllm_ascend_kernels SHARED
         ${VLLM_ASCEND_CUSTOM_OP}
     )
+    if(DEFINED VLLM_ASCEND_ASC_NPU_ARCH)
+        message(STATUS "Building AscendC kernels for ${VLLM_ASCEND_ASC_NPU_ARCH} (SOC ${SOC_VERSION})")
+        target_compile_options(vllm_ascend_kernels PRIVATE
+            $<$<COMPILE_LANGUAGE:ASC>: --npu-arch=${VLLM_ASCEND_ASC_NPU_ARCH}>
+        )
+    endif()
 endif()
 
 message("TORCH_NPU_PATH is ${TORCH_NPU_PATH}")
