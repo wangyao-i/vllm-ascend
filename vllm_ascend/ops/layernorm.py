@@ -21,6 +21,10 @@ from vllm.config import get_current_vllm_config
 from vllm.model_executor.layers.layernorm import GemmaRMSNorm, RMSNorm, RMSNormGated
 
 from vllm_ascend.device.device_op import DeviceOperator
+from vllm_ascend.device.hardware_profile import (
+    HardwareCapability,
+    get_current_hardware_profile,
+)
 from vllm_ascend.ops.triton.layernorm_gated import layer_norm_fwd_npu
 from vllm_ascend.utils import enable_custom_op
 
@@ -86,7 +90,11 @@ class AscendRMSNorm(RMSNorm):
         import torch_npu
 
         if residual is not None:
-            if enable_custom_op():
+            # The fused custom op needs aclnnAddRmsNormBias, which A6 lacks;
+            # the capability check keeps A6 on the native fused op.
+            if enable_custom_op() and get_current_hardware_profile().supports(
+                HardwareCapability.ADD_RMS_NORM_BIAS_OP
+            ):
                 x, _, residual = torch.ops._C_ascend.npu_add_rms_norm_bias(
                     x, residual, self.weight, self.bias, self.variance_epsilon
                 )
