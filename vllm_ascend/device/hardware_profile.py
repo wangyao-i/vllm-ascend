@@ -157,6 +157,9 @@ class HardwareCapability(Enum):
     # Import and register the compiled vLLM-Ascend custom-op library at runtime.
     # This is independent of whether custom ops are enabled by default.
     RUNTIME_CUSTOM_OPS = auto()
+    # The fused add+RMSNorm+bias custom op needs aclnnAddRmsNormBias, which
+    # CANN does not provide for A6 (no libopapi symbol, no ascend960dt kernel).
+    ADD_RMS_NORM_BIAS_OP = auto()
     # Legacy implementation selector: install the standard worker patch bundle.
     STANDARD_WORKER_PATCHES = auto()
     # Legacy implementation selector: install the standard Mamba platform patch.
@@ -267,6 +270,7 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
         HardwareCapability.BGMV_SGMV_META_REGISTRATION,
         HardwareCapability.FLA_GDN_PREFILL,
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
@@ -296,6 +300,77 @@ _A3_CAPABILITIES = _STANDARD_CAPABILITIES | {
     HardwareCapability.MC2_FULLMESH_V2_COMM,
     HardwareCapability.RMS_NORM_CAST,
 }
+# A6-ADAPT: A6 reuses A5's validated capability set (the silicon is close to
+# A5 and both are whitelists that exclude ATB). A6-specific exclusions are
+# applied in the A6 profile below.
+_A5_CAPABILITIES = frozenset(
+    {
+                    HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
+                    HardwareCapability.SCATTER_ND_CACHE_STORE,
+                    HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
+                    HardwareCapability.CANN_MEGAMOE,
+                    HardwareCapability.CANN_MEGAMOE_MXFP,
+                    HardwareCapability.DEVICE_LENGTH_FLASH_ATTN,
+                    HardwareCapability.CHUNKED_PREFILL_PHASE_SPLIT,
+                    HardwareCapability.CLUSTER_CPU_TOPOLOGY,
+                    HardwareCapability.DSA_C128_STATE_SMALL_BLOCK_SIZES,
+                    HardwareCapability.DSV4_COMPRESSED_CACHE,
+                    HardwareCapability.DSV41_PACKED_CACHE,
+                    HardwareCapability.ENGRAM_UNROTATED_GATE,
+                    HardwareCapability.ENGRAM_MXFP8,
+                    HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
+                    HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
+                    HardwareCapability.FLA_GDN_PREFILL,
+                    HardwareCapability.FP8_ATTENTION,
+                    HardwareCapability.POOL_KEY_INDEXER_FP8,
+                    HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
+                    HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
+                    HardwareCapability.GRAPH_MULS_ADD_FUSION,
+                    HardwareCapability.GRAPH_NORM_QUANT_FUSION,
+                    HardwareCapability.LOCAL_KV_COMM_RESOURCE,
+                    HardwareCapability.LORA_CUSTOM_OPS,
+                    HardwareCapability.MLA_FLASH,
+                    HardwareCapability.MLAPO_NATIVE_WEIGHTS,
+                    HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
+                    HardwareCapability.MOE_DISPATCH_EXTRA_ARGS,
+                    HardwareCapability.MOE_DISPATCH_SHARED_EXPERT_ARGS,
+                    HardwareCapability.MM_REDUCE_SCATTER_AI_CPU_INFERENCE,
+                    HardwareCapability.MOE_GATING_TOP_K_HASH_VISION,
+                    HardwareCapability.NPUGRAPH_EX,
+                    HardwareCapability.RUNTIME_CUSTOM_OPS,
+                    HardwareCapability.STANDARD_MAMBA_PATCH,
+                    HardwareCapability.STANDARD_WORKER_PATCHES,
+                    HardwareCapability.SWIGLU_OAI_MX_QUANT,
+                    HardwareCapability.TRITON_BATCH_MEMCPY,
+                    HardwareCapability.UNRESTRICTED_MLAPO,
+                }
+)
+# A6 does not support the ATB extension contracts: no nnal/libatb.so on A6 hosts.
+# A6-ADAPT: no compiled extension on A6
+_A6_UNSUPPORTED_CAPABILITIES = frozenset(
+    {
+        HardwareCapability.ATB_EXTENSIONS,
+        HardwareCapability.ATB_WARMUP,
+        # A6-ASC-FUSION: custom ops are available again. The kernel library
+        # builds through the ASC CMake toolchain (find_package(ASC) plus
+        # --npu-arch=dav-9201) instead of the legacy ascendc.cmake route, so
+        # vllm_ascend_C is no longer missing on A6.
+        # A6-ADAPT: no aclnnForeachAddListV2 on A6
+        # The muls_add pass traces its pattern with torch._foreach_add, which
+        # lowers to aclnnForeachAddListV2 and fails with 561103
+        # (AclOpKernelInit failed) on A6's CANN 9.2.0. The in-place V1 variant
+        # works; only the out-of-place V2 form is missing.
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        # A6-ADAPT: no TopKTopP kernel
+        # libopapi.so exports aclnnApplyTopKTopP, but the ascend960dt (and
+        # ascend910_93) op package registers no TopKTopP binary, so
+        # torch_npu.npu_top_k_top_p fails with 561000
+        # ("ApplyTopKTopPWithSorted does not has any binary"). Sampling keeps
+        # the pytorch fallback from worker/v2/sample/apply_top_k_top_p.py.
+        HardwareCapability.NPU_TOP_K_TOP_P,
+    }
+)
+_A6_CAPABILITIES = _A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES
 _DEFAULT_WORKER_CLS = "vllm_ascend.worker.worker.NPUWorker"
 _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyType(
     {
@@ -413,9 +488,8 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                 }
             ),
         ),
-        # Ascend960 (A6): new device family. Starts from the standard
-        # capability set; capabilities are enabled incrementally as they are
-        # validated on real hardware.
+        # Ascend960 (A6): silicon is close to A5. Reuse A5's validated
+        # capability set minus the ATB contracts A6 does not support.
         AscendDeviceType.A6: HardwareProfile(
             _device_type=AscendDeviceType.A6,
             attention_backend_family=AttentionBackendFamily.STANDARD,
@@ -426,7 +500,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
             weight_layout_policy=WeightLayoutPolicy.CONFIGURABLE,
             moe_comm_policy=MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,
             quantization_backend_family=QuantizationBackendFamily.STANDARD,
-            capabilities=_STANDARD_CAPABILITIES,
+            capabilities=_A6_CAPABILITIES,
         ),
     }
 )
