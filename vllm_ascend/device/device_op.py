@@ -846,6 +846,9 @@ class BaseDeviceAdaptor:
 
     @staticmethod
     def npu_gemma_rms_norm(x, weight, variance_epsilon):
+        if not get_current_hardware_profile().supports(HardwareCapability.GEMMA_RMS_NORM_OP):
+            x, _ = torch_npu.npu_rms_norm(x, 1.0 + weight, variance_epsilon)
+            return x
         x, _ = torch.ops._C_ascend.npu_gemma_rms_norm(x, weight, variance_epsilon)
         return x
 

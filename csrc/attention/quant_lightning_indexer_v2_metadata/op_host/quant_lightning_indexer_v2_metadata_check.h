@@ -14,6 +14,7 @@
  */
 
 #include "log/log.h"
+#include "../../../common/op_log_compat.h"
 #include "opdev/format_utils.h"
 #include "opdev/op_log.h"
 #include "opdev/data_type_utils.h"

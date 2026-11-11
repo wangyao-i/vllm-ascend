@@ -34,10 +34,10 @@ set(ASCEND_COMPUTE_UNIT           "ascend910b"           CACHE   STRING   "soc t
 set(ASCEND_OP_NAME                "ALL"                           CACHE   STRING   "operators that need to be compiled")
 set(ARCH_DIRECTORY                ""                           CACHE   STRING   "arch directory that need to be compiled")
 set(VENDOR_NAME                   "custom"                     CACHE   STRING   "vendor name")
-set(ASCEND_ALL_COMPUTE_UNIT       "ascend310p;ascend910b;ascend910_93;ascend950;kirinx90" CACHE STRING "all soc list")
+set(ASCEND_ALL_COMPUTE_UNIT       "ascend310p;ascend910b;ascend910_93;ascend950;kirinx90;ascend960dt;ascend960pr" CACHE STRING "all soc list")
 
-set(SOC_VERSION_LIST ascend310p ascend910b ascend910_93 ascend950 kirinx90)
-set(ARCH_DIRECTORY_LIST arch22 arch32 arch32 arch35 arch32)
+set(SOC_VERSION_LIST ascend310p ascend910b ascend910_93 ascend950 kirinx90 ascend960dt ascend960pr)
+set(ARCH_DIRECTORY_LIST arch22 arch32 arch32 arch35 arch32 arch35 arch35)
 
 if ("ascend950" IN_LIST ASCEND_COMPUTE_UNIT)
 message(STATUS "build with 3~8 packages........")

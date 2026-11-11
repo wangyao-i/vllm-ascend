@@ -60,6 +60,8 @@ public:
             .DynamicShapeSupportFlag(true)
             .ExtendCfgInfo("opFile.value", "grouped_matmul_situ_quant");
         this->AICore().AddConfig("ascend950", regbaseCfg);
+        this->AICore().AddConfig("ascend960dt", regbaseCfg);
+        this->AICore().AddConfig("ascend960pr", regbaseCfg);
     }
 };
 
