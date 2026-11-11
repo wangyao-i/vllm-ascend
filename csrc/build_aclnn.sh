@@ -225,6 +225,44 @@ elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
 
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
     SOC_ARG="ascend950"
+elif [[ "$SOC_VERSION" =~ ^ascend960 ]]; then
+    log "matched SOC branch: ascend960"
+    # ASCEND960DT (A6) series
+    # dependency: catlass
+    setup_catlass_dependency
+
+    CUSTOM_OPS_ARRAY=(
+        "sparse_flash_attention"
+        "recurrent_gated_delta_rule_v310"
+        "chunk_gated_delta_rule_fwd_h_vllm"
+        "scatter_nd_update_sk"
+        "add_rms_norm_bias"
+        "moe_gating_top_k_hash"
+        "inplace_partial_rotary_mul"
+        "kv_compress_epilog_v2"
+        "compressor"
+        "compressor_metadata"
+        "quant_lightning_indexer_v2"
+        "quant_lightning_indexer_v2_metadata"
+        "kv_quant_sparse_flash_attention_vllm"
+        "kv_quant_sparse_attn_sharedkv_metadata"
+        "hc_post"
+        "hc_pre"
+        "swiglu_group_quant"
+        "situ_mx_quant"
+        "grouped_matmul_situ_quant"
+        "indexer_compress_epilog_v2"
+        "attn_res_fwd"
+        "chunk_fwd_o_vllm"
+        "kda_gate_cumsum_vllm"
+        "kda_layout_swap12"
+        "k2q_csr"
+    )
+
+    CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
+    SOC_ARG="${SOC_VERSION%%_*}"
+    SOC_ARG="${SOC_ARG,,}"
+    [[ "$SOC_ARG" =~ ^ascend960(dt|pr)$ ]] || SOC_ARG="ascend960dt"
 else
     # others
     # currently, no custom aclnn ops for other series

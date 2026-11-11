@@ -48,7 +48,9 @@ def _uses_multimodal_rope(attention: Qwen3NextAttention) -> bool:
 class AscendQwen3NextAttention(Qwen3NextAttention):
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor, output: torch.Tensor = None):
         qkv, _ = self.qkv_proj(hidden_states)
-        if _uses_multimodal_rope(self):
+        if _uses_multimodal_rope(self) and get_current_hardware_profile().supports(
+            HardwareCapability.SPLIT_QKV_RMSNORM_MROPE
+        ):
             # MRV2 MTP uses 1D text positions; the fused kernel reads three planes.
             if positions.ndim == 1:
                 positions = positions.unsqueeze(0).expand(3, -1)

@@ -156,9 +156,14 @@ class HardwareCapability(Enum):
     RC_DEVICE_DISCOVERY = auto()
     # Fused RMSNorm+cast is available for the A2/A3 (CANN 9.1) path.
     RMS_NORM_CAST = auto()
+    # Fused Triton split+QKV RMSNorm+MRoPE kernel for Qwen3.5 attention.
+    SPLIT_QKV_RMSNORM_MROPE = auto()
     # Import and register the compiled vLLM-Ascend custom-op library at runtime.
     # This is independent of whether custom ops are enabled by default.
     RUNTIME_CUSTOM_OPS = auto()
+    # The fused Gemma RMSNorm custom op needs aclnnGemmaRmsNorm, which CANN does
+    # not provide for A6 (no ascend960dt kernel).
+    GEMMA_RMS_NORM_OP = auto()
     # The fused add+RMSNorm+bias custom op needs aclnnAddRmsNormBias, which
     # CANN does not provide for A6 (no libopapi symbol, no ascend960dt kernel).
     ADD_RMS_NORM_BIAS_OP = auto()
@@ -300,45 +305,45 @@ _A3_CAPABILITIES = _STANDARD_CAPABILITIES | {
 # applied in the A6 profile below.
 _A5_CAPABILITIES = frozenset(
     {
-                    HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
-                    HardwareCapability.SCATTER_ND_CACHE_STORE,
-                    HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
-                    HardwareCapability.CANN_MEGAMOE,
-                    HardwareCapability.CANN_MEGAMOE_MXFP,
-                    HardwareCapability.DEVICE_LENGTH_FLASH_ATTN,
-                    HardwareCapability.CHUNKED_PREFILL_PHASE_SPLIT,
-                    HardwareCapability.CLUSTER_CPU_TOPOLOGY,
-                    HardwareCapability.DSA_C128_STATE_SMALL_BLOCK_SIZES,
-                    HardwareCapability.DSV4_COMPRESSED_CACHE,
-                    HardwareCapability.DSV41_PACKED_CACHE,
-                    HardwareCapability.ENGRAM_UNROTATED_GATE,
-                    HardwareCapability.ENGRAM_MXFP8,
-                    HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
-                    HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
-                    HardwareCapability.FLA_GDN_PREFILL,
-                    HardwareCapability.FP8_ATTENTION,
-                    HardwareCapability.POOL_KEY_INDEXER_FP8,
-                    HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
-                    HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
-                    HardwareCapability.GRAPH_MULS_ADD_FUSION,
-                    HardwareCapability.GRAPH_NORM_QUANT_FUSION,
-                    HardwareCapability.LOCAL_KV_COMM_RESOURCE,
-                    HardwareCapability.LORA_CUSTOM_OPS,
-                    HardwareCapability.MLA_FLASH,
-                    HardwareCapability.MLAPO_NATIVE_WEIGHTS,
-                    HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
-                    HardwareCapability.MOE_DISPATCH_EXTRA_ARGS,
-                    HardwareCapability.MOE_DISPATCH_SHARED_EXPERT_ARGS,
-                    HardwareCapability.MM_REDUCE_SCATTER_AI_CPU_INFERENCE,
-                    HardwareCapability.MOE_GATING_TOP_K_HASH_VISION,
-                    HardwareCapability.NPUGRAPH_EX,
-                    HardwareCapability.RUNTIME_CUSTOM_OPS,
-                    HardwareCapability.STANDARD_MAMBA_PATCH,
-                    HardwareCapability.STANDARD_WORKER_PATCHES,
-                    HardwareCapability.SWIGLU_OAI_MX_QUANT,
-                    HardwareCapability.TRITON_BATCH_MEMCPY,
-                    HardwareCapability.UNRESTRICTED_MLAPO,
-                }
+        HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
+        HardwareCapability.SCATTER_ND_CACHE_STORE,
+        HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
+        HardwareCapability.CANN_MEGAMOE,
+        HardwareCapability.CANN_MEGAMOE_MXFP,
+        HardwareCapability.DEVICE_LENGTH_FLASH_ATTN,
+        HardwareCapability.CHUNKED_PREFILL_PHASE_SPLIT,
+        HardwareCapability.CLUSTER_CPU_TOPOLOGY,
+        HardwareCapability.DSA_C128_STATE_SMALL_BLOCK_SIZES,
+        HardwareCapability.DSV4_COMPRESSED_CACHE,
+        HardwareCapability.DSV41_PACKED_CACHE,
+        HardwareCapability.ENGRAM_UNROTATED_GATE,
+        HardwareCapability.ENGRAM_MXFP8,
+        HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
+        HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
+        HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.FP8_ATTENTION,
+        HardwareCapability.POOL_KEY_INDEXER_FP8,
+        HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
+        HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.GRAPH_NORM_QUANT_FUSION,
+        HardwareCapability.LOCAL_KV_COMM_RESOURCE,
+        HardwareCapability.LORA_CUSTOM_OPS,
+        HardwareCapability.MLA_FLASH,
+        HardwareCapability.MLAPO_NATIVE_WEIGHTS,
+        HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
+        HardwareCapability.MOE_DISPATCH_EXTRA_ARGS,
+        HardwareCapability.MOE_DISPATCH_SHARED_EXPERT_ARGS,
+        HardwareCapability.MM_REDUCE_SCATTER_AI_CPU_INFERENCE,
+        HardwareCapability.MOE_GATING_TOP_K_HASH_VISION,
+        HardwareCapability.NPUGRAPH_EX,
+        HardwareCapability.RUNTIME_CUSTOM_OPS,
+        HardwareCapability.STANDARD_MAMBA_PATCH,
+        HardwareCapability.STANDARD_WORKER_PATCHES,
+        HardwareCapability.SWIGLU_OAI_MX_QUANT,
+        HardwareCapability.TRITON_BATCH_MEMCPY,
+        HardwareCapability.UNRESTRICTED_MLAPO,
+    }
 )
 # A6 does not support the ATB extension contracts: no nnal/libatb.so on A6 hosts.
 # A6-ADAPT: no compiled extension on A6
@@ -363,6 +368,18 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # ("ApplyTopKTopPWithSorted does not has any binary"). Sampling keeps
         # the pytorch fallback from worker/v2/sample/apply_top_k_top_p.py.
         HardwareCapability.NPU_TOP_K_TOP_P,
+        # A6-ADAPT: no aclnnGemmaRmsNorm kernel
+        # libopapi.so exports the symbol, but CANN registers no ascend960dt
+        # GemmaRmsNorm binary, so aclnnGemmaRmsNorm fails with EZ1009.
+        # RMSNorm with (1 + weight) is the documented equivalent.
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        # A6-ADAPT: no aclnnAddRmsNormBias kernel
+        # Same as GemmaRmsNorm: no ascend960dt binary, so RMSNorm with residual
+        # falls back to npu_add_rms_norm plus a bias add.
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        # A6-ADAPT: the fused Triton MRoPE kernel raises a vector core exception
+        # on A6. Attention falls back to split + RMSNorm + rotary_emb.
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
     }
 )
 _A6_CAPABILITIES = _A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES

@@ -379,7 +379,7 @@ __aicore__ inline void ComputeFormerImplV2(LocalTensor<float>& dstLocal, LocalTe
             Add(mainA, mainA, tailA, pregMask);
             Add(mainB, mainB, tailB, pregMask);
             Add(mainA, mainA, mainB, pregMask);
-            Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+            Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
             StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + i, vMean, pregMerge);
         }
         for (uint16_t i = 0; i < (uint16_t)masterRepeats; ++i) {
@@ -387,7 +387,7 @@ __aicore__ inline void ComputeFormerImplV2(LocalTensor<float>& dstLocal, LocalTe
             LoadForHandleMasterV2(masterAddr, (i * 2 + 0) * V_LENGTH, (i * 2 + 1) * V_LENGTH, mainA, mainB, pregMask,
                                   masterAddr2);
             Add(mainA, mainA, mainB, pregMask);
-            Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+            Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
             StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + remainRepeats + i, vMean, pregMerge);
         }
         LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
@@ -396,14 +396,14 @@ __aicore__ inline void ComputeFormerImplV2(LocalTensor<float>& dstLocal, LocalTe
             LoadAlign(mainA, workAddr + (i * 2 + 0) * V_LENGTH);
             LoadAlign(mainB, workAddr + (i * 2 + 1) * V_LENGTH);
             Add(mainA, mainA, mainB, pregMask);
-            Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+            Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
             StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + i, vMean, pregMerge);
         }
         LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
         {
             pregMask = UpdateMask<float>(meanSreg);
             LoadAlign(mainA, workAddr + 0);
-            Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+            Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
             StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(dstAddr + offset, vMean, pregMerge);
         }
     }
@@ -488,7 +488,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 Add(mainA, mainA, tailA, pregMask);
                 Add(mainB, mainB, tailB, pregMask);
                 Add(mainA, mainA, mainB, pregMask);
-                Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+                Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + i, vMean, pregMerge);
             }
             for (uint16_t i = 0; i < (uint16_t)masterRepeats; ++i) {
@@ -496,7 +496,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadForHandleMasterV1(masterAddr, (i * 2 + 0) * V_LENGTH, (i * 2 + 1) * V_LENGTH, mainA, mainB,
                                       pregMask, xFp32MasterAddr, masterAddr2);
                 Add(mainA, mainA, mainB, pregMask);
-                Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+                Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + remainRepeats + i, vMean, pregMerge);
             }
             // unroll part
@@ -508,7 +508,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 Add(mainA3, mainA3, tailA3, pregMask1);
                 Add(mainB3, mainB3, tailB3, pregMask1);
                 Add(mainA3, mainA3, mainB3, pregMask1);
-                Reduce<ReduceType::SUM>(vMean3, mainA3, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean3, mainA3, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + i, vMean3, pregMerge1);
             }
             for (uint16_t i = 0; i < (uint16_t)masterRepeats; ++i) {
@@ -516,7 +516,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadForHandleMasterV1(masterAddr3, (i * 2 + 0) * V_LENGTH, (i * 2 + 1) * V_LENGTH, mainA3, mainB3,
                                       pregMask1, xFp32MasterAddr3, masterAddr4);
                 Add(mainA3, mainA3, mainB3, pregMask1);
-                Reduce<ReduceType::SUM>(vMean3, mainA3, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean3, mainA3, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + remainRepeats + i, vMean3, pregMerge1);
             }
             LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
@@ -525,7 +525,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadAlign(mainA, workAddr + (i * 2 + 0) * V_LENGTH);
                 LoadAlign(mainB, workAddr + (i * 2 + 1) * V_LENGTH);
                 Add(mainA, mainA, mainB, pregMask);
-                Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+                Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr + i, vMean, pregMerge);
             }
             // unroll part
@@ -534,14 +534,14 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadAlign(mainA3, workAddr1 + (i * 2 + 0) * V_LENGTH);
                 LoadAlign(mainB3, workAddr1 + (i * 2 + 1) * V_LENGTH);
                 Add(mainA3, mainA3, mainB3, pregMask1);
-                Reduce<ReduceType::SUM>(vMean3, mainA3, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean3, mainA3, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + i, vMean3, pregMerge1);
             }
             LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
             {
                 pregMask = UpdateMask<float>(meanSreg);
                 LoadAlign(mainA, workAddr + 0);
-                Reduce<ReduceType::SUM>(vMean, mainA, pregMask);
+                Reduce<Reg::ReduceType::SUM>(vMean, mainA, pregMask);
                 Muls(vMean, vMean, avgFactor, pregMerge);
                 Adds(vMean, vMean, epsilon, pregMerge);
                 Sqrt(vMean, vMean, pregMerge);
@@ -553,7 +553,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
             {
                 pregMask1 = UpdateMask<float>(meanSreg1);
                 LoadAlign(mainA3, workAddr1 + 0);
-                Reduce<ReduceType::SUM>(vMean3, mainA3, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean3, mainA3, pregMask1);
                 Muls(vMean3, vMean3, avgFactor, pregMerge1);
                 Adds(vMean3, vMean3, epsilon, pregMerge1);
                 Sqrt(vMean3, vMean3, pregMerge1);
@@ -616,7 +616,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 Add(mainA1, mainA1, tailA1, pregMask1);
                 Add(mainB1, mainB1, tailB1, pregMask1);
                 Add(mainA1, mainA1, mainB1, pregMask1);
-                Reduce<ReduceType::SUM>(vMean1, mainA1, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean1, mainA1, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + i, vMean1, pregMerge1);
             }
             for (uint16_t i = 0; i < (uint16_t)masterRepeats; ++i) {
@@ -624,7 +624,7 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadForHandleMasterV1(masterAddr5, (i * 2 + 0) * V_LENGTH, (i * 2 + 1) * V_LENGTH, mainA1, mainB1,
                                       pregMask1, xFp32MasterAddr5, masterAddr6);
                 Add(mainA1, mainA1, mainB1, pregMask1);
-                Reduce<ReduceType::SUM>(vMean1, mainA1, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean1, mainA1, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + remainRepeats + i, vMean1, pregMerge1);
             }
             LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
@@ -633,14 +633,14 @@ __aicore__ inline void ComputeFormerImplV1MultiN(LocalTensor<T>& xLocal1, LocalT
                 LoadAlign(mainA1, workAddr1 + (i * 2 + 0) * V_LENGTH);
                 LoadAlign(mainB1, workAddr1 + (i * 2 + 1) * V_LENGTH);
                 Add(mainA1, mainA1, mainB1, pregMask1);
-                Reduce<ReduceType::SUM>(vMean1, mainA1, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean1, mainA1, pregMask1);
                 StoreAlign<float, StoreDist::DIST_FIRST_ELEMENT_B32>(workAddr1 + i, vMean1, pregMerge1);
             }
             LocalMemBar<MemType::VEC_STORE, MemType::VEC_LOAD>();
             {
                 pregMask1 = UpdateMask<float>(meanSreg1);
                 LoadAlign(mainA1, workAddr1 + 0);
-                Reduce<ReduceType::SUM>(vMean1, mainA1, pregMask1);
+                Reduce<Reg::ReduceType::SUM>(vMean1, mainA1, pregMask1);
                 Muls(vMean1, vMean1, avgFactor, pregMerge1);
                 Adds(vMean1, vMean1, epsilon, pregMerge1);
                 Sqrt(vMean1, vMean1, pregMerge1);

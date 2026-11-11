@@ -152,6 +152,8 @@ public:
             .PrecisionReduceFlag(true)
             .ExtendCfgInfo("opFile.value", "scatter_nd_update_sk_apt");
         this->AICore().AddConfig("ascend950", aicoreConfigArch35);
+        this->AICore().AddConfig("ascend960dt", aicoreConfigArch35);
+        this->AICore().AddConfig("ascend960pr", aicoreConfigArch35);
     }
 };
 
