@@ -78,6 +78,8 @@ public:
             .DynamicShapeSupportFlag(true)
             .ExtendCfgInfo("opFile.value", "inplace_partial_rotary_mul");
         this->AICore().AddConfig("ascend950", config950);
+        this->AICore().AddConfig("ascend960dt", config950);
+        this->AICore().AddConfig("ascend960pr", config950);
     }
 };
 

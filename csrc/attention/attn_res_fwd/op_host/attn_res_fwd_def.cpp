@@ -30,6 +30,8 @@ public:
 
         this->AICore().AddConfig("ascend910_93", config);
         this->AICore().AddConfig("ascend910b", config);
+        this->AICore().AddConfig("ascend960dt", config);
+        this->AICore().AddConfig("ascend960pr", config);
     }
 };
 OP_ADD(AttnResFwd);

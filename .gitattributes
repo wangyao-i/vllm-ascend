@@ -1,0 +1,19 @@
+# Normalize line endings: store LF in the repository, keep the working tree
+# byte-identical on every platform so build scripts and shell scripts survive
+# a round trip through a Windows checkout.
+* text=auto eol=lf
+
+# Binary assets must never be normalized.
+*.so   binary
+*.o    binary
+*.a    binary
+*.pyc  binary
+*.whl  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.safetensors binary
+*.bin  binary

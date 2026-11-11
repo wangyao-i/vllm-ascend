@@ -24,6 +24,7 @@
 #include "register/op_def_registry.h"
 #include "../op_kernel/kv_quant_sparse_flash_attention_vllm_template_tiling_key.h"
 #include "kv_quant_sparse_flash_attention_vllm_tiling.h"
+#include "../../../common/op_log_compat.h"
 
 using std::map;
 using std::string;
