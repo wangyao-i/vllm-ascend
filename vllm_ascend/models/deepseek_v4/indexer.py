@@ -38,6 +38,7 @@ from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.models.deepseek_v4.attention import DeepseekV4IndexerCache
 from vllm.v1.kv_cache_interface import KVCacheSpec
 
+from vllm_ascend.device import dsv4_delivered
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.models.deepseek_v4.compressor import AscendCompressorMetadata, Compressor
 from vllm_ascend.ops.cv_linear import CVLinearWrapper
@@ -244,7 +245,7 @@ class AscendIndexerOps:
         metadata: typing.Any,
     ) -> torch.Tensor:
         wait_for_device_metadata(DeviceMetadataStage.INDEXER, id(metadata.qli_metadata))
-        topk_idxs, _ = torch.ops._C_ascend.npu_quant_lightning_indexer_v2(
+        topk_idxs, _ = dsv4_delivered.quant_lightning_indexer(
             query=query,
             key=key_cache,
             weights=self.device_operator.prepare_dsa_indexer_weights(weights),
@@ -577,7 +578,7 @@ class DeepseekV4Indexer(nn.Module):
         q = q.view(-1, self.n_heads, self.head_dim)
 
         # ===== Part2: rope[V] (main only) =====
-        torch.ops._C_ascend.inplace_partial_rotary_mul(  # rope
+        dsv4_delivered.inplace_partial_rotary_mul(  # rope
             q.unsqueeze(1),
             cos,
             sin,
@@ -689,7 +690,7 @@ class DeepseekV4Indexer(nn.Module):
             q = self.wq_b(qr)
         q = q.view(-1, self.n_heads, self.head_dim)  # [T, N, D]
 
-        torch.ops._C_ascend.inplace_partial_rotary_mul(
+        dsv4_delivered.inplace_partial_rotary_mul(
             q.unsqueeze(1),
             cos,
             sin,

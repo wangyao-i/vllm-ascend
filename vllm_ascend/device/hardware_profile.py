@@ -199,6 +199,7 @@ class DeviceAdaptorFamily(Enum):
     STANDARD = auto()
     FP8_OPTIMIZED = auto()
     COMPATIBILITY = auto()
+    A6 = auto()
 
 
 class DeviceAddressingMode(Enum):
@@ -356,6 +357,14 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
     {
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
+        # A6-ADAPT (2026-11-11, real box): the ASC-built kernels register fine, but
+        # their aclnn entry points are not installed -- `aclnnHcPre` / `aclnnHcPost` /
+        # `aclnnVllmAscend*` / `aclnnKvQuantSparseAttnSharedkv` are in none of this
+        # CANN's opapi libraries (`aclnnVllmAscend*`: 0 symbols), so the first call
+        # dies with "not in libopapi.so". Keep enable_custom_op() False (as the dev
+        # fork does) until the vendor opapi package ships; the DSv4 path here goes
+        # through the delivered cann_ops_transformer / npu_ops_transformer ops instead.
+        HardwareCapability.RUNTIME_CUSTOM_OPS,
         # A6-ASC-FUSION: custom ops are available again. The kernel library
         # builds through the ASC CMake toolchain (find_package(ASC) plus
         # --npu-arch=dav-9201) instead of the legacy ascendc.cmake route, so
@@ -512,7 +521,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
             attention_backend_family=AttentionBackendFamily.STANDARD,
             cpu_binding_mode=CPUBindingMode.TOPO_AFFINITY,
             default_worker_cls=_DEFAULT_WORKER_CLS,
-            device_adaptor_family=DeviceAdaptorFamily.STANDARD,
+            device_adaptor_family=DeviceAdaptorFamily.A6,
             device_addressing_mode=DeviceAddressingMode.DIRECT,
             weight_layout_policy=WeightLayoutPolicy.CONFIGURABLE,
             moe_comm_policy=MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,

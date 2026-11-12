@@ -10,6 +10,7 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.triton_utils import HAS_TRITON
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -38,6 +39,7 @@ from vllm_ascend.attention.utils import (
     wait_for_kv_layer_from_connector,
 )
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, get_storage_block_size
+from vllm_ascend.device import dsv4_delivered
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence import (
@@ -92,6 +94,36 @@ else:
 
 # The SAS and QLI metadata operators use a fixed 1024-element int32 layout.
 DSA_METADATA_BUFFER_SIZE = 1024
+# The delivered metadata ops emit a larger opaque blob than the in-tree 1024
+# layout (2048 int32 elements on A6). Buffers are sized for the larger of the
+# two so the blob reaches the attention op whole: truncated tiling data is not
+# a smaller answer, it is a wrong one.
+DSA_DELIVERED_METADATA_SIZE = 2048
+
+logger = init_logger(__name__)
+
+
+def stored_metadata(buffer: torch.Tensor, metadata: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Copy ``metadata`` into a stable buffer; returns ``(buffer, view)``.
+
+    The buffer keeps a capture-stable address, but its size has to follow the
+    operator: the delivered metadata ops return 2048 int32 elements while the
+    in-tree layout this repo started from assumes 1024. Growth is the only
+    reason to reallocate, and it happens on the first call (i.e. during the
+    profile run, before any graph capture). Callers must pre-size buffers for
+    the larger layout whenever the address is published before the build.
+    """
+    size = int(metadata.numel())
+    if size > buffer.numel():
+        logger.warning_once(
+            "attention metadata is %d elements but the buffer holds %d; reallocating.",
+            size,
+            buffer.numel(),
+        )
+        buffer = torch.zeros(size, dtype=metadata.dtype, device=metadata.device)
+    view = buffer[:size]
+    view.copy_(metadata)
+    return buffer, view
 
 
 class OProjBufferPool:
@@ -175,17 +207,19 @@ def get_or_compute_compressor_metadata(
         metadata.full_compress_sin.shape[0],
         metadata.full_compress_sin.shape[-1],
     )
-    computed_metadata = torch.ops._C_ascend.compressor_metadata(
+    # Torch port of the in-tree op (the delivered package has no ``compressor_metadata``
+    # and this CANN ships no ``aclnnCompressorMetadata``). Returns (cos, sin, slot).
+    computed_metadata = dsv4_delivered.dsv4_compressor_metadata(
         full_compress_cos,
         full_compress_sin,
         metadata.query_start_loc,
         metadata.start_pos,
         metadata.block_table,
-        metadata.storage_block_size,
-        get_dsa_attn_kv_plan(vllm_config).get_dsa_compressor_slot_mapping_format(),
-        compress_ratio,
-        metadata.num_compressed_tokens,
-        metadata.num_actual_reqs,
+        kv_block_size=metadata.storage_block_size,
+        slot_mapping_format=get_dsa_attn_kv_plan(vllm_config).get_dsa_compressor_slot_mapping_format(),
+        compress_ratio=compress_ratio,
+        num_compressed_tokens=metadata.num_compressed_tokens,
+        num_reqs_actual=metadata.num_actual_reqs,
     )
     cache[cache_group_key] = computed_metadata
     return computed_metadata
@@ -209,18 +243,22 @@ def build_compressor_metadata_out(
         metadata.full_compress_sin.shape[0],
         metadata.full_compress_sin.shape[-1],
     )
-    torch.ops._C_ascend.compressor_metadata_out(
+    cos, sin, slot = dsv4_delivered.dsv4_compressor_metadata(
         full_compress_cos,
         full_compress_sin,
         metadata.query_start_loc,
         metadata.start_pos,
         metadata.block_table,
-        metadata.storage_block_size,
-        get_dsa_attn_kv_plan(vllm_config).get_dsa_compressor_slot_mapping_format(),
-        compress_ratio,
-        metadata.num_actual_reqs,
-        *outputs,
+        kv_block_size=metadata.storage_block_size,
+        slot_mapping_format=get_dsa_attn_kv_plan(vllm_config).get_dsa_compressor_slot_mapping_format(),
+        compress_ratio=compress_ratio,
+        num_compressed_tokens=metadata.num_compressed_tokens,
+        num_reqs_actual=metadata.num_actual_reqs,
     )
+    # Same contract as the in-tree ``_out`` variant: write into the pre-allocated buffers
+    # so their addresses stay stable across graph replay.
+    for dst, src in zip(outputs, (cos, sin, slot)):
+        dst.copy_(src)
 
 
 def dsv4_dsa_overlap_stream() -> torch.npu.Stream:
@@ -786,7 +824,7 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             ]
             self.spec_sas_metadata = [
                 torch.zeros(
-                    DSA_METADATA_BUFFER_SIZE,
+                    DSA_DELIVERED_METADATA_SIZE,
                     dtype=torch.int32,
                     device=self.device,
                 )
@@ -839,11 +877,16 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self._init_hadamard(layer_names)
         max_num_reqs = scheduler_config.max_num_seqs * self._request_capacity_factor
         self.start_pos_prefill: torch.Tensor = torch.zeros(max_num_reqs, dtype=torch.int32, device=self.device)
+        # Sized for the delivered metadata ops (2048 int32 on A6), not the in-tree
+        # 1024 layout: the async branch publishes ``qli_metadata_buffer`` (and the
+        # SAS buffer) to the request metadata before the build runs, so a growth
+        # inside ``stored_metadata`` would leave that metadata aliasing a stale,
+        # too-small buffer.
         self.sas_metadata_buffer: torch.Tensor = torch.zeros(
-            DSA_METADATA_BUFFER_SIZE, dtype=torch.int32, device=self.device
+            DSA_DELIVERED_METADATA_SIZE, dtype=torch.int32, device=self.device
         )
         self.qli_metadata_buffer: torch.Tensor = torch.zeros(
-            DSA_METADATA_BUFFER_SIZE, dtype=torch.int32, device=self.device
+            DSA_DELIVERED_METADATA_SIZE, dtype=torch.int32, device=self.device
         )
         # QLI v2 PA_BBND reads the compressed K length plus the residual from
         # the original length. Persistent buffers keep their addresses stable
@@ -1775,10 +1818,10 @@ class AscendDSAAttentionMetadataBuilder(AscendDSAMetadataBuilder):
             if key not in self._sas_variant_buffers:
                 self._sas_variant_buffers[key] = torch.empty_like(output)
             output = self._sas_variant_buffers[key]
-        output[:DSA_METADATA_BUFFER_SIZE] = sas_metadata
+        output, view = stored_metadata(output, sas_metadata)
         if use_specialized_metadata:
             metadata_cache[output_key] = output
-        return output
+        return view
 
     def build_req_metadata(
         self,
@@ -2025,7 +2068,7 @@ class AscendDSAIndexerMetadataBuilder(AscendDSAAttentionMetadataBuilder):
 
         qli_metadata = metadata_cache.get("qli")
         if qli_metadata is None:
-            qli_metadata = torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(
+            qli_metadata = dsv4_delivered.quant_lightning_indexer_metadata(
                 num_heads_q=self.model_config.hf_config.index_n_heads,  # 64
                 num_heads_k=1,
                 head_dim=self.model_config.hf_config.index_head_dim,  # 128
@@ -2045,10 +2088,10 @@ class AscendDSAIndexerMetadataBuilder(AscendDSAAttentionMetadataBuilder):
             )
             metadata_cache["qli"] = qli_metadata
 
-        self.qli_metadata_buffer[:DSA_METADATA_BUFFER_SIZE] = qli_metadata
+        self.qli_metadata_buffer, qli_view = stored_metadata(self.qli_metadata_buffer, qli_metadata)
         if use_specialized_metadata:
             metadata_cache["qli_output"] = (self.qli_metadata_buffer, qli_seqused_k, qli_cmp_residual_k)
-        return self.qli_metadata_buffer
+        return qli_view
 
     def build_req_metadata(
         self,
@@ -2478,15 +2521,15 @@ class AscendDSAImpl(AttentionImplBase[Any]):
         cos = req_metadata.cos[layer_name]
         sin = req_metadata.sin[layer_name]
 
-        negate_sin = get_current_hardware_profile().supports(HardwareCapability.INPLACE_PARTIAL_ROTARY_MUL_NEGATE_SIN)
-        sin_arg = sin[:actual_tokens] if negate_sin else -sin[:actual_tokens]
-        torch.ops._C_ascend.inplace_partial_rotary_mul(
+        # The delivered op has no ``negate_sin`` switch: it applies the standard sign, so
+        # hand it the negated sin (the in-tree op flipped it internally).
+        sin_arg = -sin[:actual_tokens]
+        dsv4_delivered.inplace_partial_rotary_mul(
             o_proj_input[:actual_tokens].unsqueeze(1),
             cos[:actual_tokens],
             sin_arg,
             rotary_mode="interleave",
             partial_slice=[self.nope_head_dim, self.head_dim],
-            negate_sin=negate_sin,
         )
 
         # o
@@ -2538,7 +2581,7 @@ class AscendDSAImpl(AttentionImplBase[Any]):
             qr_pertoken_scale = None
         q = DeviceOperator.apply_dsa_q_rms(q, self.eps, self.q_norm_without_weight)
 
-        torch.ops._C_ascend.inplace_partial_rotary_mul(
+        dsv4_delivered.inplace_partial_rotary_mul(
             q.unsqueeze(1),
             cos,
             sin,
@@ -2563,7 +2606,7 @@ class AscendDSAImpl(AttentionImplBase[Any]):
             assert self.rope_head_dim is not None
             kv = kv.view(-1, 1, self.nope_head_dim + self.rope_head_dim)
 
-            torch.ops._C_ascend.inplace_partial_rotary_mul(
+            dsv4_delivered.inplace_partial_rotary_mul(
                 kv.unsqueeze(1),
                 cos,
                 sin,
@@ -2675,7 +2718,7 @@ class AscendDSAImpl(AttentionImplBase[Any]):
             kv = self.kv_norm(kv)
             assert self.rope_head_dim is not None
             kv = kv.view(-1, 1, self.nope_head_dim + self.rope_head_dim)
-            torch.ops._C_ascend.inplace_partial_rotary_mul(
+            dsv4_delivered.inplace_partial_rotary_mul(
                 kv.unsqueeze(1),
                 cos,
                 sin,
@@ -2712,7 +2755,7 @@ class AscendDSAImpl(AttentionImplBase[Any]):
             tail_overlap_output = overlap_result, e_tail_overlap_done
 
         q = DeviceOperator.apply_dsa_q_rms(q, self.eps, self.q_norm_without_weight)
-        torch.ops._C_ascend.inplace_partial_rotary_mul(
+        dsv4_delivered.inplace_partial_rotary_mul(
             q.unsqueeze(1),
             cos,
             sin,

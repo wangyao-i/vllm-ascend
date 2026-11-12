@@ -79,6 +79,7 @@ from vllm.v1.kv_cache_interface import KVCacheSpec
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.dsa_v1 import AscendDSAImpl, OProjBufferPool
 from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec
+from vllm_ascend.device import dsv4_delivered
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.models.common.ops.sequence_parallel import (
     sp_all_gather,
@@ -782,16 +783,25 @@ class DeepseekV4DecoderLayer(nn.Module):
         return hidden_states, hidden_states.float()
 
     def hc_pre(self, x: torch.Tensor, hc_fn: torch.Tensor, hc_scale: torch.Tensor, hc_base: torch.Tensor):
-        y = torch.ops._C_ascend.npu_hc_pre_v2(
-            x, hc_fn, hc_scale, hc_base, self.hc_mult, self.hc_sinkhorn_iters, self.norm_eps, self.hc_eps
+        # The delivered package's fused pre + sinkhorn (no in-tree ``npu_hc_pre_v2``:
+        # its aclnn ``aclnnHcPre`` is not in this CANN). The shim adds the unit
+        # ``seq_len`` axis the op wants and swaps the two epsilons.
+        return dsv4_delivered.mhc_pre_sinkhorn(
+            x,
+            hc_fn,
+            hc_scale,
+            hc_base,
+            hc_mult=self.hc_mult,
+            sinkhorn_iters=self.hc_sinkhorn_iters,
+            norm_eps=self.norm_eps,
+            hc_eps=self.hc_eps,
         )
-        return y
 
     def hc_post(self, x: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: torch.Tensor):
-        y = torch.ops._C_ascend.npu_hc_post(
-            x.unsqueeze(dim=0), residual.unsqueeze(dim=0), post.unsqueeze(dim=0), comb.unsqueeze(dim=0)
-        )
-        return y.squeeze(dim=0)
+        # PTA's ``npu_mhc_post`` (the A6 path, validated on the real box during bring-up);
+        # the in-tree ``npu_hc_post``
+        # needs an aclnn entry point this CANN does not ship.
+        return dsv4_delivered.mhc_post_npu(x, residual, post, comb)
 
     def forward(
         self,

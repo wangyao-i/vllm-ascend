@@ -740,10 +740,16 @@ class BaseDeviceAdaptor:
     @staticmethod
     def unpack_dsa_indexer_kv_cache(kv_cache):
         """Unpack indexer kv_cache tuple.
-        Non-A5: returns (state_cache, k_cache, scale_cache, None).
-        A5: returns (state_cache, k_cache, scale_cache, full_cache)."""
-        _, _, _, indexer_state_cache, indexer_k_cache, indexer_scale_cache = kv_cache
-        return indexer_state_cache, indexer_k_cache, indexer_scale_cache, None
+
+        The layout follows the *profile capability*, not the device family: any
+        profile that advertises ``DSV4_COMPRESSED_CACHE`` (A5, and A6 here)
+        appends ``indexer_full_cache`` as a seventh element. Slice the common
+        prefix and take the tail only when it is actually there, so both the
+        6-element and the 7-element tuples unpack correctly.
+        """
+        _, _, _, indexer_state_cache, indexer_k_cache, indexer_scale_cache = kv_cache[:6]
+        indexer_full_cache = kv_cache[6] if len(kv_cache) > 6 else None
+        return indexer_state_cache, indexer_k_cache, indexer_scale_cache, indexer_full_cache
 
     @staticmethod
     def unpack_dsa_forward_kv_cache(kv_cache, compress_ratio):
@@ -1972,6 +1978,74 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         return tensor
 
 
+class A6DeviceAdaptor(BaseDeviceAdaptor):
+    """A6 adaptations: base behaviour plus the fp8 indexer family.
+
+    Everything the DSA path needs that differs from the base adaptor is decided
+    by one axis: this profile runs the fp8 indexer KV plan (``indexer_kv_dtype
+    == "fp8"``) and therefore carries the A5-shaped compressed cache, i.e. an
+    ``indexer_full_cache`` filled by the fused ``indexer_compress_epilog_v2``.
+    The base adaptor instead does int8 quantisation plus two separate
+    ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
+    (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
+
+    Only that family is overridden, by delegation to the A5 implementation, so
+    the difference stays visible and each delegation can be checked against the
+    op contract that forced it. Everything else keeps the base behaviour, in
+    particular the weight layouts the A6 kernels were validated with.
+    """
+
+    # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
+
+    @staticmethod
+    def get_dsa_indexer_quant_mode() -> int:
+        return A5DeviceAdaptor.get_dsa_indexer_quant_mode()
+
+    @staticmethod
+    def prepare_dsa_indexer_weights(weights):
+        return A5DeviceAdaptor.prepare_dsa_indexer_weights(weights)
+
+    @staticmethod
+    def prepare_dsa_indexer_query_scale(q_scale):
+        return A5DeviceAdaptor.prepare_dsa_indexer_query_scale(q_scale)
+
+    @staticmethod
+    def prepare_dsa_indexer_key_scale(indexer_scale_cache):
+        return A5DeviceAdaptor.prepare_dsa_indexer_key_scale(indexer_scale_cache)
+
+    @staticmethod
+    def indexer_quantize_query(q):
+        return A5DeviceAdaptor.indexer_quantize_query(q)
+
+    @staticmethod
+    def indexer_quant_scatter(q, kv, indexer_k_cache, indexer_scale_cache, indexer_full_cache, slot_mapping):
+        return A5DeviceAdaptor.indexer_quant_scatter(
+            q, kv, indexer_k_cache, indexer_scale_cache, indexer_full_cache, slot_mapping
+        )
+
+    @staticmethod
+    def indexer_quant_scatter_part1(kv, indexer_k_cache, indexer_full_cache, slot_mapping):
+        return A5DeviceAdaptor.indexer_quant_scatter_part1(kv, indexer_k_cache, indexer_full_cache, slot_mapping)
+
+    @staticmethod
+    def dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping):
+        return A5DeviceAdaptor.dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping)
+
+    # --- decode metadata for the compressed cache ---
+
+    @staticmethod
+    def get_dsa_decode_cu_seqlens_cmp_kv(cmp_kv_tensor):
+        return A5DeviceAdaptor.get_dsa_decode_cu_seqlens_cmp_kv(cmp_kv_tensor)
+
+    @staticmethod
+    def get_dsa_decode_cu_seqlens_ori_kv(
+        decode_ratio_to_sas_metadata, cache_key, seq_lens, num_decodes, zero_i32, fallback_cu_seqlens
+    ):
+        return A5DeviceAdaptor.get_dsa_decode_cu_seqlens_ori_kv(
+            decode_ratio_to_sas_metadata, cache_key, seq_lens, num_decodes, zero_i32, fallback_cu_seqlens
+        )
+
+
 class Ascend310PDeviceAdaptor(BaseDeviceAdaptor):
     @classmethod
     def reshape_and_cache(
@@ -2039,6 +2113,7 @@ def get_device_adaptor() -> type["BaseDeviceAdaptor"]:
         DeviceAdaptorFamily.STANDARD: BaseDeviceAdaptor,
         DeviceAdaptorFamily.FP8_OPTIMIZED: A5DeviceAdaptor,
         DeviceAdaptorFamily.COMPATIBILITY: Ascend310PDeviceAdaptor,
+        DeviceAdaptorFamily.A6: A6DeviceAdaptor,
     }
     return adaptor_by_family[get_current_hardware_profile().device_adaptor_family]
 

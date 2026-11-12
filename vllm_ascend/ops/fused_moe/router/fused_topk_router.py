@@ -22,6 +22,7 @@ from vllm.distributed.eplb.eplb_state import EplbLayerState
 from vllm.model_executor.models.utils import sequence_parallel_chunk
 
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType
+from vllm_ascend.device.dsv4_delivered import moe_gating_top_k_hash_npu
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.fused_moe.router.grouped_topk_router import AscendGroupedTopKRouter
 
@@ -173,7 +174,11 @@ class AscendFusedTopKRouter(AscendGroupedTopKRouter):
                     # ids. Apply the identical TP chunk only when communication
                     # has not already aligned ids with local router rows.
                     input_ids = sequence_parallel_chunk(input_ids.reshape(-1, 1)).reshape(-1)
-                input_ids = torch.where(input_ids == -1, 0, input_ids)
+                # Padded slots carry the -1 sentinel and must read as token 0.
+                # clamp_min keeps that semantics while avoiding the int64
+                # masked-fill lowering of torch.where, whose Fill_INT64 kernel
+                # faults on A6 (Fill_INT64_INT64_high_performance_101).
+                input_ids = input_ids.clamp_min(0)
             else:
                 input_ids = None
                 tid2eid_ones = None
@@ -201,7 +206,7 @@ class AscendFusedTopKRouter(AscendGroupedTopKRouter):
             text_bias = self.e_score_correction_bias
             if text_bias is not None and text_bias.dtype != router_logits.dtype:
                 text_bias = text_bias.to(router_logits.dtype)
-            topk_weights, topk_ids, _ = torch.ops._C_ascend.moe_gating_top_k_hash(
+            topk_weights, topk_ids, _ = moe_gating_top_k_hash_npu(
                 x=router_logits,
                 k=self.top_k,
                 bias=text_bias,

@@ -235,7 +235,10 @@ elif [[ "$SOC_VERSION" =~ ^ascend960 ]]; then
         "moe_gating_top_k_hash"
         "inplace_partial_rotary_mul"
         "kv_compress_epilog_v2"
-        "compressor"
+        # No "compressor": A6 runs the delivered 14-argument op, whose bf16/fp16 kernel
+        # CANN ships built in (opp/built-in/.../ascend960dt/ops_transformer/compressor).
+        # A vendor copy shadows it with this repo's 19-argument prototype, and the
+        # delivered call then trips over the extra rope inputs in that prototype.
         "compressor_metadata"
         "quant_lightning_indexer_v2"
         "quant_lightning_indexer_v2_metadata"

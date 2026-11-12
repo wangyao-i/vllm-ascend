@@ -37,6 +37,7 @@ from vllm.models.deepseek_v4.compressor import CompressorStateCache
 from vllm.v1.kv_cache_interface import KVCacheSpec
 
 from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec
+from vllm_ascend.device import dsv4_delivered
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.utils import vllm_version_is
 from vllm_ascend.worker.device_metadata import DeviceMetadataStage, wait_for_device_metadata
@@ -209,15 +210,17 @@ class Compressor(nn.Module):
         assert compressor_metadata is not None
         assert state_metadata is not None
         compress_cos, compress_sin, slot_mapping = self._compute_metadata(compressor_metadata)
-        compressed_kv = torch.ops._C_ascend.compressor(
+        # Delivered ``npu_compressor`` through the dev fork's shim: the delivered op stops
+        # before RMSNorm + RoPE, so the shim applies both after the call.
+        compressed_kv = dsv4_delivered.compressor(
             hidden_states,
             self.wkv.weight,
             self.wgate.weight,
             state_cache.squeeze(-2),
             self.ape,
-            self.norm.weight,
-            compress_sin.view(-1, compress_sin.shape[-1]),
-            compress_cos.view(-1, compress_cos.shape[-1]),
+            norm_weight=self.norm.weight,
+            rope_sin=compress_sin.view(-1, compress_sin.shape[-1]),
+            rope_cos=compress_cos.view(-1, compress_cos.shape[-1]),
             state_block_table=state_metadata.block_table,
             cu_seqlens=compressor_metadata.query_start_loc,
             seqused=None,
@@ -226,6 +229,8 @@ class Compressor(nn.Module):
             cmp_ratio=self.compress_ratio,
             coff=2 if self.overlap else 1,
             norm_eps=self.norm_eps,
+            # Quarter-turn is the A6 convention for the compressor rope (the in-tree
+            # op takes it explicitly; the delivered path hard-codes the same layout).
             rotary_mode=2,
             cache_mode=1,
         )

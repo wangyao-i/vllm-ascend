@@ -14,7 +14,6 @@ Two paths share the MixedQuantSparseFlashMla (cann_ops_transformer) operator:
 
 from collections.abc import Callable
 from functools import lru_cache
-from importlib import import_module
 
 import torch
 
@@ -28,14 +27,19 @@ from vllm_ascend.quantization.methods.kv_cache.turboquant import COMPRESS_RATIO
 
 @lru_cache
 def _get_mixed_quant_sparse_flash_mla_ops() -> tuple[Callable, Callable]:
-    try:
-        import_module("cann_ops_transformer")
-        namespace = torch.ops.cann_ops_transformer
-        return namespace.mixed_quant_sparse_flash_mla, namespace.mixed_quant_sparse_flash_mla_metadata
-    except (ImportError, AttributeError) as exc:
+    # 9.3 registers ``mixed_quant_sparse_flash_mla``; 9.2 registers it as
+    # ``npu_mixed_quant_sparse_flash_mla``. Resolve through the shared layer so both
+    # spellings work (see ``dsv4_delivered._OT_OP_NAMES``).
+    from vllm_ascend.device.dsv4_delivered import ot_op
+
+    attention_op = ot_op("kv_quant_sparse_attn_sharedkv")
+    metadata_op = ot_op("kv_quant_sparse_attn_sharedkv_metadata")
+    if attention_op is None or metadata_op is None:
         raise RuntimeError(
-            "DeepSeek V4 TurboQuant requires MixedQuantSparseFlashMla from a matching ops-transformer package."
-        ) from exc
+            "DeepSeek V4 requires MixedQuantSparseFlashMla from a matching ops-transformer package "
+            "(neither cann_ops_transformer nor npu_ops_transformer provides it)."
+        )
+    return attention_op, metadata_op
 
 
 def _adapt(kwargs):
