@@ -427,10 +427,10 @@ def compressor(
     # The delivered compressor yields C^Comp in fp32 and the norm/rope post-processing keeps it
     # there, while the in-tree contract lists ``cmp_kv`` as FLOAT16/BFLOAT16
     # (csrc/attention/compressor/README.md) and the result goes straight into the compressed
-    # cache write. Hand back the caller's dtype instead of a 4-byte-per-element tensor: the
-    # cache write interprets those bytes at the cache dtype, so a wider payload is not a
-    # slower answer, it is the wrong one.
-    return out.to(x.dtype)
+    # cache write. Casting to the caller's dtype was tried and then withdrawn: it changes the
+    # payload the compressed-cache write interprets, and that change was never measured at
+    # ``temperature=0``. Keep the pre-existing behaviour until that measurement exists.
+    return out
 
 
 def inplace_partial_rotary_mul(x, r1, r2, *, rotary_mode="interleave", partial_slice=None):
