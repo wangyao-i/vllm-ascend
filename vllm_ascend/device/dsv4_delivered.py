@@ -374,6 +374,14 @@ def compressor(
     # be reported only at the next sync, so without this the worker dies with the engine's error
     # long after the call that caused it.
     _sync_first_call(_COMPRESSOR_OP_KEY)
+    # ``_compressor_norm_and_rope`` rotates with rotary_mode="interleave" hardcoded, which is
+    # the only layout this checkpoint uses. Reject the other spelling instead of silently
+    # applying interleave to a caller that asked for half (in-tree rotary_mode=1).
+    if rotary_mode not in (0, 2):
+        raise RuntimeError(
+            f"compressor: rotary_mode={rotary_mode} is not supported by the delivered path "
+            "(0 or 2 / interleave only); the in-tree op also accepts 1 (half)."
+        )
     out = _compressor_norm_and_rope(
         out,
         norm_weight,
@@ -865,14 +873,18 @@ def moe_gating_top_k_hash_npu(
     # text-only request routes identically without it -- say so once instead of failing the
     # serve, and keep the warning loud enough to catch a real vision deployment.
     if bias_vl is not None:
-        global _VISION_GATING_WARNED
-        if not _VISION_GATING_WARNED:
-            _VISION_GATING_WARNED = True
-            logger.warning(
-                "moe_gating_top_k_hash: the delivered path cannot apply bias_vl (the checkpoint "
-                "ships vision weights); text tokens are unaffected because the image-sentinel "
-                "range is empty, image inputs would be routed without the vision bias."
-            )
+        # The delivered gating op has no ``bias_vl`` argument. Warning and continuing routed
+        # image tokens without the vision bias: wrong experts, no error, and the caller could
+        # not tell. Refuse instead, the way the missing hash arguments are refused below -- an
+        # unhonourable capability has to fail loudly. A6 does not advertise
+        # MOE_GATING_TOP_K_HASH_VISION, so it takes the vision-aware fallback in the router and
+        # never reaches this point.
+        raise RuntimeError(
+            "moe_gating_top_k_hash cannot apply bias_vl: the delivered gating op has no "
+            "vision bias input, and routing image tokens without it silently changes the "
+            "expert selection. Withhold MOE_GATING_TOP_K_HASH_VISION on this device so the "
+            "router uses its vision-aware fallback."
+        )
 
     fn = torch_npu_op("npu_moe_gating_top_k")
     if fn is None:

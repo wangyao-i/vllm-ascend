@@ -65,7 +65,10 @@ def select_deepseek_v4_vision_experts(
     if tid2eid is None:
         topk_ids = dynamic_ids
     else:
-        lookup_ids = torch.where(image_mask, 0, input_ids)
+        # A scalar operand lowers torch.where to a masked fill, and the int64 variant
+        # (Fill_INT64_INT64_high_performance_101) faults on A6 -- the same lowering the
+        # hash caller above sidesteps with clamp_min. Two tensor operands keep it a select.
+        lookup_ids = torch.where(image_mask, torch.zeros_like(input_ids), input_ids)
         text_ids = tid2eid[lookup_ids].to(torch.int64)
         topk_ids = torch.where(image_mask.unsqueeze(-1), dynamic_ids, text_ids)
     topk_weights = scores.gather(1, topk_ids)

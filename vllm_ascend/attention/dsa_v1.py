@@ -122,7 +122,7 @@ def stored_metadata(buffer: torch.Tensor, metadata: torch.Tensor) -> tuple[torch
         # comment in ``__init__``), so growth is a programming error rather than a case to
         # handle: reallocating would hand back a new tensor while the request metadata still
         # aliases the old one, and the next call would allocate yet again.
-        raise AssertionError(
+        raise RuntimeError(
             f"attention metadata is {size} elements but the buffer holds {buffer.numel()}; "
             "buffers must be pre-sized for the larger (delivered) layout before the "
             "address is published"

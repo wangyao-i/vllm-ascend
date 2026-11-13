@@ -357,6 +357,15 @@ class AscendW4A8MXFPDynamicFusedMoEMethod(AscendMoEScheme):
                 w13 = w13.view(torch.float4_e2m1fn_x2)
                 w13_input_dtype = torch.float4_e2m1fn_x2
             if get_ascend_device_type() == AscendDeviceType.A6:
+                if getattr(layer, "activation", None) in (MoEActivation.SITU, "situ"):
+                    # The branch below casts the raw byte payload, which drops the FP4
+                    # semantic dtype the GMSQ schema needs for SITU. Fail at load time
+                    # instead of running grouped-matmul with the wrong dtype metadata.
+                    raise RuntimeError(
+                        "A6 MoE weight NZ cast does not implement the SITU / FP4-semantic-dtype "
+                        "path: the bare uint8 cast drops input_dtype, so grouped-matmul would "
+                        "run with the wrong dtype metadata."
+                    )
                 # Bare NZ cast: grouped-matmul tiling derives C0 from the tensor's
                 # own dtype. The customize_dtype/input_dtype hints make the packed
                 # FP4 weight look 8-bit, so the NZ weight comes out with C0=32 and

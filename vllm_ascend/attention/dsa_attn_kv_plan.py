@@ -208,7 +208,16 @@ class DsaAttnKvPlan:
         # (same 8-bit storage; the in-place update lands in the original
         # tensor). quant_mode="fp8_bf16" (int 0): group(64) FP8(e4m3) with
         # bf16 scale, rope kept bf16.
-        dsv4_delivered.delivered_namespace().kv_compress_epilog(
+        # Resolve through ot_op(), not the bare namespace: the delivered spelling differs per
+        # package (9.3 un-prefixed, 9.2 possibly ``npu_``-prefixed) and only the resolver
+        # retries the other spelling. A namespace attribute would raise AttributeError.
+        kv_compress_epilog = dsv4_delivered.ot_op("kv_compress_epilog")
+        if kv_compress_epilog is None:
+            raise RuntimeError(
+                "the delivered package does not provide 'kv_compress_epilog'; the fp8 "
+                "compressed-cache write cannot proceed"
+            )
+        kv_compress_epilog(
             cache=cache.view(torch.uint8),
             x=x.view(-1, x.shape[-1]),
             slot_mapping=slot_mapping,
