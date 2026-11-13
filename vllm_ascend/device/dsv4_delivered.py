@@ -154,10 +154,14 @@ def _ot_impl(name: str) -> Callable[..., Any]:
     fn = ot_op(name)
     if fn is None:
         raise RuntimeError(
-            f"the delivered op for '{name}' is unavailable -- 'npu_ops_transformer' does not "
-            "provide it in this process (the registered spellings are in _OT_OP_NAMES)."
+            f"the delivered op for '{name}' is unavailable -- no installed delivered package "
+            f"provides it (default package '{_OT_PACKAGE}'; alternative packages only for "
+            "_OT_PACKAGE_PREFERRED entries, spellings in _OT_OP_NAMES)."
         )
     return fn
+
+
+_NAMESPACE_ORDER = ("cann_ops_transformer", "npu_ops_transformer")
 
 
 def delivered_namespace():
@@ -167,12 +171,26 @@ def delivered_namespace():
     prefix); 9.2 ships ``npu_ops_transformer`` (``npu_compressor``,
     ``npu_mixed_quant_sparse_flash_mla``, ...). Callers that use the namespace directly
     (the compressed-cache writer, the sparse-attention pair) go through this.
+
+    "Installed" is decided by the same memoized probe ``ot_ops`` uses, so this function and the
+    per-op resolver cannot disagree about whether a package exists. They can still prefer
+    different packages when *both* are importable: the resolver defaults to ``_OT_PACKAGE`` and
+    only opts into ``cann_ops_transformer`` for the ``_OT_PACKAGE_PREFERRED`` entries, while this
+    one takes the first entry of ``_NAMESPACE_ORDER``. That divergence is unreachable on the two
+    supported configurations (9.2-only, 9.3-only), so it warns rather than staying silent -- a box
+    with both would otherwise call the schema and the namespace spellings of one op family out of
+    different libraries.
     """
-    for package in ("cann_ops_transformer", "npu_ops_transformer"):
-        try:
-            importlib.import_module(package)
-        except Exception:  # noqa: BLE001 - not installed
-            continue
+    installed = [package for package in _NAMESPACE_ORDER if ot_ops(package) is not None]
+    if len(installed) > 1:
+        logger.warning_once(
+            "both delivered op packages are importable (%s); the namespace path uses "
+            "'%s' while per-op resolution defaults to '%s'",
+            ", ".join(installed),
+            installed[0],
+            _OT_PACKAGE,
+        )
+    for package in installed:
         namespace = getattr(torch.ops, package, None)
         if namespace is not None:
             return namespace
@@ -362,7 +380,13 @@ def compressor(
         RopeTables(sin=rope_sin, cos=rope_cos, head_dim=rope_head_dim),
         norm_eps=norm_eps,
     )
-    return out
+    # The delivered compressor yields C^Comp in fp32 and the norm/rope post-processing keeps it
+    # there, while the in-tree contract lists ``cmp_kv`` as FLOAT16/BFLOAT16
+    # (csrc/attention/compressor/README.md) and the result goes straight into the compressed
+    # cache write. Hand back the caller's dtype instead of a 4-byte-per-element tensor: the
+    # cache write interprets those bytes at the cache dtype, so a wider payload is not a
+    # slower answer, it is the wrong one.
+    return out.to(x.dtype)
 
 
 def inplace_partial_rotary_mul(x, r1, r2, *, rotary_mode="interleave", partial_slice=None):

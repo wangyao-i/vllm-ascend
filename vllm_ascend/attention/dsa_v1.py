@@ -92,7 +92,11 @@ else:
     dspark_swa_indices_supported = None  # type: ignore
 
 
-# The SAS and QLI metadata operators use a fixed 1024-element int32 layout.
+# The in-tree SAS and QLI metadata operators use a fixed 1024-element int32
+# layout. This constant names that layout and is what the unit tests build
+# in-tree-shaped tensors from; runtime buffers are sized with
+# ``DSA_DELIVERED_METADATA_SIZE`` below, so the delivered blob is copied whole
+# whichever length the operator returns.
 DSA_METADATA_BUFFER_SIZE = 1024
 # The delivered metadata ops emit a larger opaque blob than the in-tree 1024
 # layout (2048 int32 elements on A6). Buffers are sized for the larger of the
@@ -108,19 +112,21 @@ def stored_metadata(buffer: torch.Tensor, metadata: torch.Tensor) -> tuple[torch
 
     The buffer keeps a capture-stable address, but its size has to follow the
     operator: the delivered metadata ops return 2048 int32 elements while the
-    in-tree layout this repo started from assumes 1024. Growth is the only
-    reason to reallocate, and it happens on the first call (i.e. during the
-    profile run, before any graph capture). Callers must pre-size buffers for
-    the larger layout whenever the address is published before the build.
+    in-tree layout this repo started from assumes 1024. Callers pre-size every
+    publishable buffer for the larger layout before the address goes out, so a
+    short buffer here means one of them was sized wrong.
     """
     size = int(metadata.numel())
     if size > buffer.numel():
-        logger.warning_once(
-            "attention metadata is %d elements but the buffer holds %d; reallocating.",
-            size,
-            buffer.numel(),
+        # Every publishable buffer is pre-sized for the larger layout (see the allocation
+        # comment in ``__init__``), so growth is a programming error rather than a case to
+        # handle: reallocating would hand back a new tensor while the request metadata still
+        # aliases the old one, and the next call would allocate yet again.
+        raise AssertionError(
+            f"attention metadata is {size} elements but the buffer holds {buffer.numel()}; "
+            "buffers must be pre-sized for the larger (delivered) layout before the "
+            "address is published"
         )
-        buffer = torch.zeros(size, dtype=metadata.dtype, device=metadata.device)
     view = buffer[:size]
     view.copy_(metadata)
     return buffer, view
@@ -1649,10 +1655,9 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
             )
             if not has_prefill:
                 assert self.spec_sas_metadata is not None
-                self.spec_sas_metadata[draft_index - 1][:DSA_METADATA_BUFFER_SIZE].copy_(
-                    result[:DSA_METADATA_BUFFER_SIZE]
-                )
-                return self.spec_sas_metadata[draft_index - 1]
+                buffer, view = stored_metadata(self.spec_sas_metadata[draft_index - 1], result)
+                self.spec_sas_metadata[draft_index - 1] = buffer
+                return view
             return result
 
         if build_dspark_swa is not None:
