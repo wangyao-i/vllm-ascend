@@ -394,12 +394,6 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # A6-ADAPT: the fused Triton MRoPE kernel raises a vector core exception
         # on A6. Attention falls back to split + RMSNorm + rotary_emb.
         HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
-        # A6-ADAPT: the delivered hash-gating shim accepts ``bias_vl`` but drops it
-        # with a warning, so the fused vision hash cannot route image tokens the way
-        # the in-tree path does. Withholding the capability makes the router take the
-        # existing ``select_deepseek_v4_vision_experts`` fallback, which does honour
-        # ``bias_vl`` -- silently degraded routing is worse than an unfused path.
-        HardwareCapability.MOE_GATING_TOP_K_HASH_VISION,
     }
 )
 _A6_CAPABILITIES = _A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES

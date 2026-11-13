@@ -833,6 +833,21 @@ def _npu_gating_accepts_hash(fn: Callable[..., Any]) -> bool:
     return _NPU_GATING_HASH_OK
 
 
+def _op_schema_has_term(op: Callable[..., Any], term: str) -> bool:
+    """Whether the registered schema of ``op`` mentions ``term``.
+
+    The shims that forward a keyword the delivered op does not declare get a TypeError at
+    call time; probing the schema first turns that into a message that names the missing
+    argument. ``_schemas`` is the only reliable view -- the wrappers here are declared
+    ``(*args, **kwargs)``, so ``inspect.signature`` reports nothing useful (same trap as
+    ``_npu_gating_accepts_hash`` documents).
+    """
+    schemas = getattr(op, "_schemas", None)
+    if not schemas:
+        return False
+    return any(term in str(schema) for schema in schemas.values())
+
+
 def moe_gating_top_k_hash_npu(
     x: torch.Tensor,
     *,
@@ -847,10 +862,10 @@ def moe_gating_top_k_hash_npu(
     group_select_mode: int = 1,
     renorm: int = 0,
     norm_type: int = 2,
-    out_flag: bool = False,  # noqa: ARG001 - torch_npu always returns the 3-tuple
+    out_flag: bool = False,
     bias_vl: torch.Tensor | None = None,
-    image_sentinel_lo: int = 0,  # noqa: ARG001 - vision preset selector (token id range)
-    image_sentinel_count: int = 0,  # noqa: ARG001 - vision preset selector (range width)
+    image_sentinel_lo: int = 0,
+    image_sentinel_count: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """``torch.ops._C_ascend.moe_gating_top_k_hash`` -> ``torch_npu.npu_moe_gating_top_k``
     carrying the hash-placement arguments (``input_ids`` / ``tid2eid``).
@@ -869,22 +884,51 @@ def moe_gating_top_k_hash_npu(
     ``OpCommand`` wrapper -- see :func:`_npu_gating_accepts_hash`.)
     """
     # The in-tree op also carries the vision preset (``bias_vl``); torch_npu's wrapper has no
-    # such argument. It only matters for tokens inside the image-sentinel id range, so a
-    # text-only request routes identically without it -- say so once instead of failing the
-    # serve, and keep the warning loud enough to catch a real vision deployment.
+    # such argument, so the shim can only honour it by delegating to the in-tree op.
     if bias_vl is not None:
         # The delivered gating op has no ``bias_vl`` argument. Warning and continuing routed
         # image tokens without the vision bias: wrong experts, no error, and the caller could
-        # not tell. Refuse instead, the way the missing hash arguments are refused below -- an
-        # unhonourable capability has to fail loudly. A6 does not advertise
-        # MOE_GATING_TOP_K_HASH_VISION, so it takes the vision-aware fallback in the router and
-        # never reaches this point.
-        raise RuntimeError(
-            "moe_gating_top_k_hash cannot apply bias_vl: the delivered gating op has no "
-            "vision bias input, and routing image tokens without it silently changes the "
-            "expert selection. Withhold MOE_GATING_TOP_K_HASH_VISION on this device so the "
-            "router uses its vision-aware fallback."
+        # not tell. Take the in-tree op when this build registered it (that one does accept
+        # ``bias_vl``), otherwise refuse -- never substitute a top-k that ignores it.
+        # A6 keeps MOE_GATING_TOP_K_HASH_VISION (its in-tree op declares ``bias_vl``), so A6
+        # with a vision checkpoint reaches this branch too -- the in-tree delegation below is
+        # the primary path, not an A5-only fallback.
+        ascend_ns = getattr(torch.ops, "_C_ascend", None)
+        in_tree_hash = getattr(ascend_ns, "moe_gating_top_k_hash", None) if ascend_ns is not None else None
+        # The in-tree op declares ``bias_vl`` (csrc autogen proto has it as OPTIONAL_INPUT),
+        # but the registered schema is what a call actually has to satisfy. Probe it before
+        # delegating: handing a keyword the schema does not declare raises TypeError, which is
+        # the same "silent wrong answer became an opaque crash" trade this branch exists to
+        # avoid -- with a message that says which argument is missing instead.
+        if in_tree_hash is not None and not _op_schema_has_term(in_tree_hash, "bias_vl"):
+            in_tree_hash = None
+        if in_tree_hash is None:
+            raise RuntimeError(
+                "bias_vl requires the in-tree moe_gating_top_k_hash, which this build does not "
+                "provide (or whose registered schema does not declare bias_vl); refusing to "
+                "route image tokens without the vision bias."
+            )
+        # Forward the full contract the proto declares (moe_gating_top_k_hash_proto.cpp):
+        # x plus the four optional inputs, and the vision preset as two attributes.
+        topk_weights, topk_ids, out = in_tree_hash(
+            x=x,
+            k=k,
+            bias=bias,
+            input_ids=input_ids,
+            tid2eid=tid2eid,
+            bias_vl=bias_vl,
+            k_group=k_group,
+            group_count=group_count,
+            group_select_mode=group_select_mode,
+            renorm=renorm,
+            norm_type=norm_type,
+            out_flag=out_flag,
+            routed_scaling_factor=routed_scaling_factor,
+            eps=eps,
+            image_sentinel_lo=image_sentinel_lo,
+            image_sentinel_count=image_sentinel_count,
         )
+        return topk_weights, topk_ids.to(torch.int32), out
 
     fn = torch_npu_op("npu_moe_gating_top_k")
     if fn is None:
