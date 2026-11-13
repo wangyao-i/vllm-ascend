@@ -30,8 +30,6 @@ from vllm.logger import logger
 # Op key of the compressor in the delivered package (also the name the shim resolves).
 _COMPRESSOR_OP_KEY = "compressor"
 
-_VISION_GATING_WARNED = False
-
 
 _OT_PACKAGE_PREFERRED = {
     "compressor": "cann_ops_transformer",

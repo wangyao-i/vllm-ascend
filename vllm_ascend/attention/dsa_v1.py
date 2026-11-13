@@ -10,7 +10,6 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import get_forward_context
-from vllm.logger import init_logger
 from vllm.triton_utils import HAS_TRITON
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -103,8 +102,6 @@ DSA_METADATA_BUFFER_SIZE = 1024
 # two so the blob reaches the attention op whole: truncated tiling data is not
 # a smaller answer, it is a wrong one.
 DSA_DELIVERED_METADATA_SIZE = 2048
-
-logger = init_logger(__name__)
 
 
 def stored_metadata(buffer: torch.Tensor, metadata: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
