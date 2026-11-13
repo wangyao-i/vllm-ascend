@@ -11,17 +11,22 @@ import torch
 @lru_cache
 def _get_sparse_flash_mla_ops() -> tuple[Callable, Callable]:
     """Load SparseFlashMla operators without importing vllm_ascend.ops."""
-    # CANN 9.3 registers these in ``cann_ops_transformer``; 9.2 registers the same spellings
-    # in ``npu_ops_transformer``. Resolve through the shared layer so both packages work.
-    from vllm_ascend.device.dsv4_delivered import delivered_namespace
+    # Resolve through the shim layer instead of a bare namespace attribute: ``_OT_OP_NAMES``
+    # maps both delivered spellings and ``ot_op`` retries the un-prefixed one, so a 9.2 build
+    # that registers ``npu_sparse_flash_mla`` is found. Reading the namespace directly skipped
+    # that retry and reported the missing package as "requires ... a matching CANN 9.2
+    # toolkit" -- on a 9.2 machine.
+    from vllm_ascend.device.dsv4_delivered import ot_op
 
-    try:
-        namespace = delivered_namespace()
-        return namespace.sparse_flash_mla, namespace.sparse_flash_mla_metadata
-    except (ImportError, AttributeError, RuntimeError) as exc:
+    attention_op = ot_op("sparse_flash_mla")
+    metadata_op = ot_op("sparse_flash_mla_metadata")
+    if attention_op is None or metadata_op is None:
         raise RuntimeError(
-            "DeepSeek-V4 BF16 KV on Ascend A5 requires SparseFlashMla from a matching CANN 9.2 toolkit."
-        ) from exc
+            "DeepSeek-V4 BF16 KV requires SparseFlashMla from the delivered ops package: "
+            "neither 'cann_ops_transformer' nor 'npu_ops_transformer' provides "
+            "'sparse_flash_mla' / 'sparse_flash_mla_metadata' in this build."
+        )
+    return attention_op, metadata_op
 
 
 def _add_compressed_kv_lengths(kwargs: dict[str, Any]) -> None:

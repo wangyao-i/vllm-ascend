@@ -20,13 +20,12 @@ import importlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any
 
 import torch
 import torch_npu
 from vllm.logger import logger
-
-_OT_PACKAGE = "npu_ops_transformer"
 
 # Op key of the compressor in the delivered package (also the name the shim resolves).
 _COMPRESSOR_OP_KEY = "compressor"
@@ -56,10 +55,17 @@ _OT_OP_NAMES = {
     "quant_lightning_indexer": "npu_quant_lightning_indexer",
     "quant_lightning_indexer_metadata": "npu_quant_lightning_indexer_metadata",
     "lightning_indexer": "npu_lightning_indexer",
+    # The BF16 SparseFlashMla pair. Mapped here so ``ot_op`` can retry the un-prefixed
+    # spelling: 9.3 registers ``sparse_flash_mla``, a 9.2 build may register
+    # ``npu_sparse_flash_mla``. Addressing the namespace directly skipped that retry and
+    # surfaced as "requires SparseFlashMla from a matching CANN 9.2 toolkit" *on* 9.2.
+    "sparse_flash_mla": "npu_sparse_flash_mla",
+    "sparse_flash_mla_metadata": "npu_sparse_flash_mla_metadata",
 }
 
 
 _OT_OPS: dict[str, Any] = {}
+_PACKAGE_AVAILABLE: dict[str, bool] = {}
 
 
 _OT_PYTHON_INTERFACE = frozenset({"compressor"})
@@ -79,18 +85,40 @@ def ot_ops(package: str) -> Any:
     return _OT_OPS[package]
 
 
-def _ot_package_for(name: str) -> str:
-    """The delivered package to resolve ``name`` from.
+def _package_available(package: str) -> bool:
+    """Whether ``package`` is installed and registered its ``torch.ops`` namespace.
 
-    ``_OT_PACKAGE_PREFERRED`` names the ops whose 9.3.0 spelling is the only ABI-correct one
-    *when that package exists*. On a 9.2.0 box it does not, and these ops have to keep resolving
-    through ``npu_ops_transformer``; ``ot_ops`` memoizes the failed import, so asking costs one
-    import attempt per process.
+    Availability must not be judged by ``ot_ops`` (the ``<package>.ops`` python layer):
+    that layer is only what ``_OT_PYTHON_INTERFACE`` ops need, and there is no evidence the
+    9.3 package ships one. Filtering on it would drop ``cann_ops_transformer`` on a 9.3
+    install that does register its schemas, and the op would look missing again. Judge by
+    what a resolution actually uses -- the import plus the namespace.
+    """
+    if package not in _PACKAGE_AVAILABLE:
+        try:
+            importlib.import_module(package)
+        except Exception:  # noqa: BLE001 - not installed / import failure
+            _PACKAGE_AVAILABLE[package] = False
+        else:
+            _PACKAGE_AVAILABLE[package] = getattr(torch.ops, package, None) is not None
+    return _PACKAGE_AVAILABLE[package]
+
+
+def _installed_packages(name: str) -> list[str]:
+    """Every installed delivered package, the op's preferred one first.
+
+    A single-package answer is not enough: ``npu_ops_transformer`` is only the 9.2 package, so
+    returning it unconditionally made every op that is not in
+    ``_OT_PACKAGE_PREFERRED`` unresolvable on a 9.3-only box -- ``kv_compress_epilog`` raised
+    "package provides nothing" on a CANN install that ships the op, while the old
+    ``delivered_namespace()`` path worked there. Try the preferred package first, then every
+    other installed one, so 9.2-only, 9.3-only and both-installed all resolve.
     """
     preferred = _OT_PACKAGE_PREFERRED.get(name)
-    if preferred is not None and ot_ops(preferred) is not None:
-        return preferred
-    return _OT_PACKAGE
+    order = ([preferred] if preferred is not None else []) + [
+        package for package in _NAMESPACE_ORDER if package != preferred
+    ]
+    return [package for package in order if _package_available(package)]
 
 
 def _ot_op_in(name: str) -> Callable[..., Any] | None:
@@ -114,38 +142,48 @@ def _ot_op_in(name: str) -> Callable[..., Any] | None:
     only when its entry actually provides a callable, otherwise it resolves to None and the
     caller degrades explicitly instead of reaching a stand-in by accident.
     """
-    package = _ot_package_for(name)
-    ops_mod = ot_ops(package)
-    if ops_mod is None:
-        return None
-
     registered = _OT_OP_NAMES.get(name)
     if registered is None:
         return None
 
-    if name in _OT_PYTHON_INTERFACE:
-        # The registered schema for these is not callable as documented (see the table above),
-        # so the package's own python entry is the only entry -- never fall back to the schema.
-        for attr in (registered, name):
-            candidate = getattr(ops_mod, attr, None)
-            if callable(candidate):
-                return candidate
-        return None
-
-    ns = getattr(torch.ops, package, None)
-    if ns is None:
-        return None
-    # 9.3.0 registers the un-prefixed spelling (``npu_compressor`` -> ``compressor``).
-    for candidate in (registered, registered[len("npu_") :] if registered.startswith("npu_") else registered):
-        try:
-            return getattr(ns, candidate)
-        except (AttributeError, RuntimeError):
+    for package in _installed_packages(name):
+        if name in _OT_PYTHON_INTERFACE:
+            # The registered schema for these is not callable as documented (see the table
+            # above), so the package's own python entry is the only entry -- never fall back
+            # to the schema.
+            ops_mod = ot_ops(package)
+            if ops_mod is None:
+                continue
+            for attr in (registered, name):
+                candidate = getattr(ops_mod, attr, None)
+                if callable(candidate):
+                    return candidate
             continue
+
+        namespace = getattr(torch.ops, package, None)
+        if namespace is None:
+            continue
+        # 9.3.0 registers the un-prefixed spelling (``npu_compressor`` -> ``compressor``).
+        for candidate in (
+            registered,
+            registered[len("npu_") :] if registered.startswith("npu_") else registered,
+        ):
+            try:
+                return getattr(namespace, candidate)
+            except (AttributeError, RuntimeError):
+                continue
     return None
 
 
+@cache
 def ot_op(name: str) -> Callable[..., Any] | None:
-    """``npu_ops_transformer`` op ``name``, or None when the package does not provide it."""
+    """The installed delivered op ``name``, or None when no package provides it.
+
+    Cached because the compressed-cache writer asks once per layer per step, and the answer
+    cannot change inside a process (the imports behind it are memoized too). Tests that
+    monkeypatch ``torch.ops`` must call ``ot_op.cache_clear()`` between cases, or the first
+    resolution leaks into the next one.
+    """
     return _ot_op_in(name)
 
 
@@ -154,9 +192,9 @@ def _ot_impl(name: str) -> Callable[..., Any]:
     fn = ot_op(name)
     if fn is None:
         raise RuntimeError(
-            f"the delivered op for '{name}' is unavailable -- no installed delivered package "
-            f"provides it (default package '{_OT_PACKAGE}'; alternative packages only for "
-            "_OT_PACKAGE_PREFERRED entries, spellings in _OT_OP_NAMES)."
+            f"the delivered op for '{name}' is unavailable -- none of the installed delivered "
+            f"packages provides it (tried {_installed_packages(name) or list(_NAMESPACE_ORDER)}); "
+            "the registered spellings are in _OT_OP_NAMES."
         )
     return fn
 
@@ -169,26 +207,24 @@ def delivered_namespace():
 
     CANN 9.3 ships it as ``cann_ops_transformer`` (ops registered without the ``npu_``
     prefix); 9.2 ships ``npu_ops_transformer`` (``npu_compressor``,
-    ``npu_mixed_quant_sparse_flash_mla``, ...). Callers that use the namespace directly
-    (the compressed-cache writer, the sparse-attention pair) go through this.
+    ``npu_mixed_quant_sparse_flash_mla``, ...). Every in-tree caller resolves ops through
+    :func:`ot_op` now -- the compressed-cache writer and the sparse-attention pair both did
+    once -- so this is only the namespace-level accessor for code that needs the raw
+    ``torch.ops`` surface.
 
-    "Installed" is decided by the same memoized probe ``ot_ops`` uses, so this function and the
-    per-op resolver cannot disagree about whether a package exists. They can still prefer
-    different packages when *both* are importable: the resolver defaults to ``_OT_PACKAGE`` and
-    only opts into ``cann_ops_transformer`` for the ``_OT_PACKAGE_PREFERRED`` entries, while this
-    one takes the first entry of ``_NAMESPACE_ORDER``. That divergence is unreachable on the two
-    supported configurations (9.2-only, 9.3-only), so it warns rather than staying silent -- a box
-    with both would otherwise call the schema and the namespace spellings of one op family out of
-    different libraries.
+    "Installed" is decided by ``_package_available`` -- the import plus the registered
+    namespace -- and the per-op resolver walks the same ``_NAMESPACE_ORDER``, so both paths
+    pick the same package on every configuration. Only a box that installs both can still
+    split one op family across them, which is why that case warns.
     """
-    installed = [package for package in _NAMESPACE_ORDER if ot_ops(package) is not None]
+    installed = [package for package in _NAMESPACE_ORDER if _package_available(package)]
     if len(installed) > 1:
         logger.warning_once(
-            "both delivered op packages are importable (%s); the namespace path uses "
-            "'%s' while per-op resolution defaults to '%s'",
+            "both delivered op packages are importable (%s); both the namespace path and "
+            "per-op resolution use '%s'. Install only one so an op family cannot be split "
+            "across two libraries.",
             ", ".join(installed),
             installed[0],
-            _OT_PACKAGE,
         )
     for package in installed:
         namespace = getattr(torch.ops, package, None)
@@ -355,6 +391,14 @@ def compressor(
     # it. The in-tree ``_C_ascend.compressor`` folds RMSNorm and RoPE into the op (19
     # arguments) and needs a vendor bundle that would shadow the built-in A6 kernel, so it
     # must not be used here.
+    # Validate before the call, not after: ``fn`` writes ``state_cache`` in place and the
+    # first call also synchronizes, so a late rejection would leave a half-applied step and
+    # surface a lazy state-cache shape guard instead of this message.
+    if rotary_mode not in (0, 2):
+        raise RuntimeError(
+            f"compressor: rotary_mode={rotary_mode} is not supported by the delivered path "
+            "(0 or 2 / interleave only); the in-tree op also accepts 1 (half)."
+        )
     fn = _ot_impl(_COMPRESSOR_OP_KEY)
     out = fn(
         x,
@@ -374,14 +418,6 @@ def compressor(
     # be reported only at the next sync, so without this the worker dies with the engine's error
     # long after the call that caused it.
     _sync_first_call(_COMPRESSOR_OP_KEY)
-    # ``_compressor_norm_and_rope`` rotates with rotary_mode="interleave" hardcoded, which is
-    # the only layout this checkpoint uses. Reject the other spelling instead of silently
-    # applying interleave to a caller that asked for half (in-tree rotary_mode=1).
-    if rotary_mode not in (0, 2):
-        raise RuntimeError(
-            f"compressor: rotary_mode={rotary_mode} is not supported by the delivered path "
-            "(0 or 2 / interleave only); the in-tree op also accepts 1 (half)."
-        )
     out = _compressor_norm_and_rope(
         out,
         norm_weight,
@@ -890,9 +926,13 @@ def moe_gating_top_k_hash_npu(
         # image tokens without the vision bias: wrong experts, no error, and the caller could
         # not tell. Take the in-tree op when this build registered it (that one does accept
         # ``bias_vl``), otherwise refuse -- never substitute a top-k that ignores it.
-        # A6 keeps MOE_GATING_TOP_K_HASH_VISION (its in-tree op declares ``bias_vl``), so A6
-        # with a vision checkpoint reaches this branch too -- the in-tree delegation below is
-        # the primary path, not an A5-only fallback.
+        # A6 keeps MOE_GATING_TOP_K_HASH_VISION, so a vision checkpoint on A6 reaches this branch
+        # too -- the in-tree delegation below is the primary path, not an A5-only fallback. That
+        # is based on the build, not on the proto declaring ``bias_vl``: the op has ascend960dt
+        # kernel objects in csrc/build, ``aclnnMoeGatingTopKHash`` is exported by the installed
+        # ``vendors/custom_transformer`` op_api library (which ``opp/vendors/config.ini`` loads
+        # first), and ``_C_ascend`` ops do run on A6 in practice. A build without any of those
+        # falls through to the refusal below, which is why the capability is not the guard.
         ascend_ns = getattr(torch.ops, "_C_ascend", None)
         in_tree_hash = getattr(ascend_ns, "moe_gating_top_k_hash", None) if ascend_ns is not None else None
         # The in-tree op declares ``bias_vl`` (csrc autogen proto has it as OPTIONAL_INPUT),
@@ -906,8 +946,9 @@ def moe_gating_top_k_hash_npu(
             raise RuntimeError(
                 "bias_vl requires the in-tree moe_gating_top_k_hash, which this build does not "
                 "register: the delivered gating op has no vision bias input, and routing image "
-                "tokens without it silently changes the expert selection. Withhold "
-                "MOE_GATING_TOP_K_HASH_VISION so the router uses its vision-aware fallback."
+                "tokens without it silently changes the expert selection. Build with the "
+                "in-tree op (its aclnn entry included), or run without vision weights -- the "
+                "capability is already advertised, so withholding it here is not an option."
             )
         topk_weights, topk_ids, vision_out = in_tree_hash(
             x,
