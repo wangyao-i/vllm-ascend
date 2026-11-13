@@ -14,6 +14,7 @@ Two paths share the MixedQuantSparseFlashMla (cann_ops_transformer) operator:
 
 from collections.abc import Callable
 from functools import lru_cache
+from importlib import import_module
 
 import torch
 
@@ -57,18 +58,36 @@ def _adapt(kwargs):
     _drop_paged_kv_cu_seqlens(kwargs)
 
 
+@lru_cache
+def _get_turboquant_ops() -> tuple[Callable, Callable]:
+    """TurboQuant keeps the 9.3 package only.
+
+    TurboQuant is the C4/A5 path this change does not touch, and its ``_adapt`` feeds the
+    9.3 schema (``seqused_ori_kv`` / ``max_seqlen_ori_kv`` / ``layout_kv="PA_BBND"``).
+    Resolving it through ``ot_op`` would hand those kwargs to the 9.2
+    ``npu_mixed_quant_sparse_flash_mla``, which has never been validated for them: a loud
+    "package missing" would become a possible TypeError or silently wrong semantics.
+    Restoring the original resolution for this path keeps 9.3 byte-identical to before and
+    puts 9.2 back on the explicit missing-package failure. The FP8 adapter below still goes
+    through ``ot_op`` -- that is the path A6 actually runs.
+    """
+    import_module("cann_ops_transformer")
+    namespace = torch.ops.cann_ops_transformer
+    return namespace.mixed_quant_sparse_flash_mla, namespace.mixed_quant_sparse_flash_mla_metadata
+
+
 def mixed_quant_sparse_flash_mla_metadata_turboquant(**kwargs):
     _adapt(kwargs)
     # Metadata requires explicit compressed lengths; fused TQ attention derives them.
     _add_compressed_kv_lengths(kwargs)
-    _, metadata_op = _get_mixed_quant_sparse_flash_mla_ops()
+    _, metadata_op = _get_turboquant_ops()
     return metadata_op(**kwargs)
 
 
 def mixed_quant_sparse_flash_mla_turboquant(q, **kwargs):
     _adapt(kwargs)
     _ensure_sinks(kwargs)
-    attention_op, _ = _get_mixed_quant_sparse_flash_mla_ops()
+    attention_op, _ = _get_turboquant_ops()
     return attention_op(q, **kwargs)
 
 

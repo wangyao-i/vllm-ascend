@@ -3,7 +3,6 @@
 
 from collections.abc import Callable
 from functools import lru_cache
-from importlib import import_module
 from typing import Any
 
 import torch
@@ -12,11 +11,14 @@ import torch
 @lru_cache
 def _get_sparse_flash_mla_ops() -> tuple[Callable, Callable]:
     """Load SparseFlashMla operators without importing vllm_ascend.ops."""
+    # CANN 9.3 registers these in ``cann_ops_transformer``; 9.2 registers the same spellings
+    # in ``npu_ops_transformer``. Resolve through the shared layer so both packages work.
+    from vllm_ascend.device.dsv4_delivered import delivered_namespace
+
     try:
-        import_module("cann_ops_transformer")
-        namespace = torch.ops.cann_ops_transformer
+        namespace = delivered_namespace()
         return namespace.sparse_flash_mla, namespace.sparse_flash_mla_metadata
-    except (ImportError, AttributeError) as exc:
+    except (ImportError, AttributeError, RuntimeError) as exc:
         raise RuntimeError(
             "DeepSeek-V4 BF16 KV on Ascend A5 requires SparseFlashMla from a matching CANN 9.2 toolkit."
         ) from exc

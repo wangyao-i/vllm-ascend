@@ -1825,6 +1825,11 @@ class AscendDSAAttentionMetadataBuilder(AscendDSAMetadataBuilder):
             output = self._sas_variant_buffers[key]
         output, view = stored_metadata(output, sas_metadata)
         if use_specialized_metadata:
+            # The cache keeps the buffer, the caller gets the op-length view. Both are the same
+            # storage and the same data_ptr -- only the length metadata differs -- so the
+            # capture address does not move, and on A6 the two lengths are equal anyway.
+            # Stated here so nobody re-derives the (wrong) reason that caching the view would
+            # relocate anything.
             metadata_cache[output_key] = output
         return view
 

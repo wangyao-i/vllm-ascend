@@ -905,30 +905,29 @@ def moe_gating_top_k_hash_npu(
         if in_tree_hash is None:
             raise RuntimeError(
                 "bias_vl requires the in-tree moe_gating_top_k_hash, which this build does not "
-                "provide (or whose registered schema does not declare bias_vl); refusing to "
-                "route image tokens without the vision bias."
+                "register: the delivered gating op has no vision bias input, and routing image "
+                "tokens without it silently changes the expert selection. Withhold "
+                "MOE_GATING_TOP_K_HASH_VISION so the router uses its vision-aware fallback."
             )
-        # Forward the full contract the proto declares (moe_gating_top_k_hash_proto.cpp):
-        # x plus the four optional inputs, and the vision preset as two attributes.
-        topk_weights, topk_ids, out = in_tree_hash(
-            x=x,
-            k=k,
+        topk_weights, topk_ids, vision_out = in_tree_hash(
+            x,
+            k,
             bias=bias,
             input_ids=input_ids,
             tid2eid=tid2eid,
-            bias_vl=bias_vl,
             k_group=k_group,
             group_count=group_count,
+            routed_scaling_factor=routed_scaling_factor,
+            eps=eps,
             group_select_mode=group_select_mode,
             renorm=renorm,
             norm_type=norm_type,
             out_flag=out_flag,
-            routed_scaling_factor=routed_scaling_factor,
-            eps=eps,
+            bias_vl=bias_vl,
             image_sentinel_lo=image_sentinel_lo,
             image_sentinel_count=image_sentinel_count,
         )
-        return topk_weights, topk_ids.to(torch.int32), out
+        return topk_weights, topk_ids.to(torch.int32), vision_out
 
     fn = torch_npu_op("npu_moe_gating_top_k")
     if fn is None:
