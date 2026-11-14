@@ -15,6 +15,12 @@
 
 #include "quant_lightning_indexer_v2_tiling.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <string>
+
+#include "../../../common/op_log_compat.h"
 #include "../op_kernel/quant_lightning_indexer_v2_template_tiling_key.h"
 
 using namespace ge;
@@ -882,7 +888,7 @@ ge::graphStatus QLIV2InfoParser::GetActualSeqLenSize(uint32_t &size, const gert:
     size = static_cast<uint32_t>(tensor->GetShapeSize());
     if (size <= 0) {
         OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON(
-            opName_, actualSeqLenName.c_str(), std::to_string(size).c_str(),
+            opName_, actualSeqLenName.c_str(), std::to_string(size),
             "The shape size of " + actualSeqLenName + " should be greater than 0");
         return ge::GRAPH_FAILED;
     }
@@ -959,7 +965,7 @@ ge::graphStatus QLIV2InfoParser::GetBatchSize()
         }
         OP_CHECK_IF(
             cuSeqLensQSize <= 1,
-            OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON(opName_, "cu_seqlens_q", std::to_string(cuSeqLensQSize).c_str(),
+            OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON(opName_, "cu_seqlens_q", std::to_string(cuSeqLensQSize),
                                                       "The shape size of cu_seqlens_q should be greater than  1 (B+1)"),
             return ge::GRAPH_FAILED);
         bSize_ = cuSeqLensQSize - 1;
@@ -1308,7 +1314,7 @@ ge::graphStatus QLIV2InfoParser::ValidateInputShapesMatch()
     // -----------------------check metadata-------------------
     OP_CHECK_IF((opParamInfo_.metadata.tensor->GetShapeSize() != METADATA_LIMIT),
                 OP_LOGE_FOR_INVALID_SHAPESIZE_WITH_REASON(
-                    opName_, "metadata", std::to_string(opParamInfo_.metadata.tensor->GetShapeSize()).c_str(),
+                    opName_, "metadata", std::to_string(opParamInfo_.metadata.tensor->GetShapeSize()),
                     "The shape size of metadata must be " + std::to_string(METADATA_LIMIT)),
                 return ge::GRAPH_FAILED);
     return ge::GRAPH_SUCCESS;

@@ -458,7 +458,7 @@ class AddRMSNormQuantFusionPass(VllmInductorPass):
             if profile.supports(HardwareCapability.DYNAMIC_MX_QUANT_FUSION):
                 AddRMSNormDynamicMXQuantPattern(vllm_config, eps=eps).register(self.pattern_match_passes)
                 RMSNormDynamicMXQuantPattern(vllm_config, eps=eps).register(self.pattern_match_passes)
-            if enable_custom_op():
+            if enable_custom_op() and profile.supports(HardwareCapability.ADD_RMS_NORM_BIAS_OP):
                 AddRMSNormQuantPattern(vllm_config, eps=eps).register(self.pattern_match_passes)
                 AddRMSNormQuantPatternWithBias(vllm_config, eps=eps).register(self.pattern_match_passes)
                 AddRMSNormDynamicQuantPatternWithBias(vllm_config, eps=eps).register(self.pattern_match_passes)

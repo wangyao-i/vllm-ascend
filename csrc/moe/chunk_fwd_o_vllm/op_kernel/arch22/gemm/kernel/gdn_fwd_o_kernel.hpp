@@ -7,8 +7,15 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  */
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202))
+// A6 (Ascend960DT/PR) 复用 A5 的 include 集，但 CATLASS_ARCH 必须是 9201，
+// 否则会落到下方的 2201 分支（AtlasA2），在 A6 上算出的结果是错的。
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202)
+#define CATLASS_ARCH 9201
+#else
 #define CATLASS_ARCH 3510
+#endif
 
 #include "catlass/arch/arch.hpp"
 #include "catlass/arch/cross_core_sync.hpp"
