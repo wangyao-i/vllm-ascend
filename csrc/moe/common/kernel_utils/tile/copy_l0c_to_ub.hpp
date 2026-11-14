@@ -13,7 +13,7 @@
 
 #include "catlass/arch/arch.hpp"
 #include "catlass/catlass.hpp"
-#if defined(CATLASS_ARCH) && CATLASS_ARCH == 3510
+#if defined(CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201)
 #include "catlass/gemm/tile/ascend950/copy_l0c_to_dst.hpp"
 #endif
 #include "tla/tensor.hpp"
@@ -21,7 +21,7 @@
 
 namespace Common::Tile {
 
-#if defined(CATLASS_ARCH) && CATLASS_ARCH == 3510
+#if defined(CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201)
 
 template <
     class ArchTag,
@@ -38,7 +38,7 @@ struct CopyL0CToUBTla {
 
 #endif
 
-#if defined(CATLASS_ARCH) && CATLASS_ARCH == 3510
+#if defined(CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201)
 
 template <
     /// Tag indicating architecture
@@ -150,7 +150,7 @@ struct PackedTileCopyTla {
 #endif
 };
 
-#if defined(CATLASS_ARCH) && CATLASS_ARCH == 3510
+#if defined(CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201)
 
 template <class TensorSrc_, class ElementDst_, class LayoutDst_, class CoordDst_, bool ReluEnable_>
 struct CopyL0CToUBTla<
