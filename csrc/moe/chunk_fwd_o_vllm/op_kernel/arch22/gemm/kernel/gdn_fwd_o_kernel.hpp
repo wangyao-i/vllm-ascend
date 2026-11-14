@@ -90,6 +90,10 @@ public:
     
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
     using ArchTag = Arch::Ascend950;
+#elif defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202)
+    // A6 必须用 Ascend960DT，否则 ArchTag 落到 AtlasA2，
+    // 导致 CopyGmToL1A/CopyL0CToDst 等 TileCopy 类型对不上，编译即失败。
+    using ArchTag = Arch::Ascend960DT;
 #else
     using ArchTag = Arch::AtlasA2;
 #endif
