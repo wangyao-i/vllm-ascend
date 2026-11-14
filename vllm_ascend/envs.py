@@ -60,10 +60,6 @@ env_variables: dict[str, Callable[[], Any]] = {
     # The path for HCCL library, it's used by pyhccl communicator backend. If
     # not set, the default value is libhccl.so.
     "HCCL_SO_PATH": lambda: os.getenv("HCCL_SO_PATH", None),
-    # Diagnostic only: skip GDN core computation for dummy-weight A6 smoke runs.
-    # Valid values: 0 (default, normal computation) or 1 (write zero output).
-    # Never enable for real weights. This variable contains no sensitive data.
-    "VLLM_ASCEND_DUMMY_SKIP_GDN": lambda: bool(int(os.getenv("VLLM_ASCEND_DUMMY_SKIP_GDN", "0"))),
     # The version of vllm is installed. This value is used for developers who
     # installed vllm from source locally. In this case, the version of vllm is
     # usually changed. For example, if the version of vllm is "0.9.0", but when

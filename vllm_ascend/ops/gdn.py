@@ -38,7 +38,6 @@ from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata  # typ
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 
-from vllm_ascend import envs
 from vllm_ascend.attention.utils import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
@@ -486,14 +485,6 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
         wait_for_kv_layer_from_connector(self.prefix)
         record_attention_compute_start()
 
-        # Diagnostic only: dummy weights do not produce meaningful outputs.
-        # Skip GDN kernels on A6 while testing the rest of the service stack.
-        # This must be explicitly enabled by the task launch script and must
-        # never be used with real model weights.
-        if envs.VLLM_ASCEND_DUMMY_SKIP_GDN:
-            core_attn_out.zero_()
-            return
-
         assert isinstance(attn_metadata, dict)
         attn_metadata = attn_metadata[self.prefix]
         assert isinstance(attn_metadata, GDNAttentionMetadata)
@@ -818,8 +809,8 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
 
             # Both fused prefill kernels (torch_npu.npu_chunk_gated_delta_rule and
             # fla_npu's chunk_gated_delta_rule_fwd) only support bfloat16 inputs.
-            # Gate on the model dtype so fp16 models (e.g. ColQwen3.5) fall back
-            # to the Triton pipeline instead of hitting an aclnn dtype error.
+            # Gate on the query activation dtype, not the projection weight
+            # storage dtype. fp16 queries (e.g. ColQwen3.5) use Triton.
             supports_fused_dtype = query_non_spec.dtype == torch.bfloat16
             use_fla_gdn_prefill = (
                 supports_fused_dtype

@@ -2,6 +2,5 @@ pr: 51
 entries:
   - category: bugfix
     text: >-
-      Disabled FLA GDN prefill on A6 after a graph-capture workspace failure
-      and added an opt-in, dummy-weight-only GDN diagnostic stub. The stub
-      writes zero output and must not be used for real-weight inference.
+      Disabled FLA GDN prefill on A6 when the installed wheel lacks its
+      ascend960dt operator binary, using the existing prefill fallback.
