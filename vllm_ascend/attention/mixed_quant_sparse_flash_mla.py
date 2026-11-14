@@ -28,14 +28,23 @@ from vllm_ascend.quantization.methods.kv_cache.turboquant import COMPRESS_RATIO
 
 @lru_cache
 def _get_mixed_quant_sparse_flash_mla_ops() -> tuple[Callable, Callable]:
-    try:
-        import_module("cann_ops_transformer")
-        namespace = torch.ops.cann_ops_transformer
-        return namespace.mixed_quant_sparse_flash_mla, namespace.mixed_quant_sparse_flash_mla_metadata
-    except (ImportError, AttributeError) as exc:
-        raise RuntimeError(
-            "DeepSeek V4 TurboQuant requires MixedQuantSparseFlashMla from a matching ops-transformer package."
-        ) from exc
+    # A6-ASC-FUSION: 两套交付包命名不同 —— 9.3 是 cann_ops_transformer 且算子无前缀；
+    # 9.2 只有 npu_ops_transformer，注册名带 npu_ 前缀（实测本机存在
+    #   npu_ops_transformer::npu_mixed_quant_sparse_flash_mla / ..._metadata）。
+    # 原实现只试 9.3 包名，在 9.2 机器上必然抛下面的 RuntimeError。
+    for package, prefix in (("cann_ops_transformer", ""), ("npu_ops_transformer", "npu_")):
+        try:
+            import_module(package)
+            namespace = getattr(torch.ops, package)
+            return (
+                getattr(namespace, f"{prefix}mixed_quant_sparse_flash_mla"),
+                getattr(namespace, f"{prefix}mixed_quant_sparse_flash_mla_metadata"),
+            )
+        except (ImportError, AttributeError):
+            continue
+    raise RuntimeError(
+        "DeepSeek V4 TurboQuant requires MixedQuantSparseFlashMla from a matching ops-transformer package."
+    )
 
 
 def _adapt(kwargs):

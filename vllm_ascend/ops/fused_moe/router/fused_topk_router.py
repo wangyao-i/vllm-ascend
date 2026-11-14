@@ -173,7 +173,11 @@ class AscendFusedTopKRouter(AscendGroupedTopKRouter):
                     # ids. Apply the identical TP chunk only when communication
                     # has not already aligned ids with local router rows.
                     input_ids = sequence_parallel_chunk(input_ids.reshape(-1, 1)).reshape(-1)
-                input_ids = torch.where(input_ids == -1, 0, input_ids)
+                # Padded slots carry the -1 sentinel and must read as token 0.
+                # clamp_min keeps that semantics while avoiding the int64
+                # masked-fill lowering of torch.where, whose Fill_INT64 kernel
+                # faults on A6 (Fill_INT64_INT64_high_performance_101).
+                input_ids = input_ids.clamp_min(0)
             else:
                 input_ids = None
                 tid2eid_ones = None

@@ -235,7 +235,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend960 ]]; then
         "moe_gating_top_k_hash"
         "inplace_partial_rotary_mul"
         "kv_compress_epilog_v2"
-        "compressor"
+        #"compressor"  # A6: 9.3 的 op_compile_info 校验报 invalid input，已走交付包 npu_compressor
         "compressor_metadata"
         "quant_lightning_indexer_v2"
         "quant_lightning_indexer_v2_metadata"
