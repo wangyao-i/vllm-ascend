@@ -28,6 +28,14 @@
 
 # What's Patched and how it works:
 # --------------------------------
+# * platform/patch_acl_dvpp_shim.py:
+#   Target: CANN's unavailable acl.media and acl.himpi placeholder modules.
+#   Why: On Ascend960, dunder attribute probes raise RuntimeError and break
+#        Python introspection during text-only model startup.
+#   How: Make dunder probes follow Python's AttributeError lookup contract,
+#        while unsupported DVPP API calls retain the original RuntimeError.
+#   Future plan: Remove after CANN fixes the placeholder behavior.
+# --------------------------------
 # * worker/patch_kda_recoverssm.py:
 #   Target: Kimi KDA's KDARecoverSSMCommitContext module binding.
 #   Why: The upstream metadata builder imports its CUDA context directly.
