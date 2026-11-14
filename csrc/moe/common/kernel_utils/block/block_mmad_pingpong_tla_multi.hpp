@@ -361,7 +361,7 @@ public:
 #elif (defined (CATLASS_ARCH) && CATLASS_ARCH == 2201)
         using CopyL0CToGm = typename TileCopy_::template CopyL0CToGm<TensorC>;
         CopyL0CToGm copyL0CToDst;
-#elif (defined (CATLASS_ARCH) && CATLASS_ARCH == 3510)
+#elif (defined (CATLASS_ARCH) && (CATLASS_ARCH == 3510 || CATLASS_ARCH == 9201))
         using CopyL0CToDst = typename TileCopy_::template CopyL0CToDst<TensorC>;
         CopyL0CToDst copyL0CToDst;
 #endif

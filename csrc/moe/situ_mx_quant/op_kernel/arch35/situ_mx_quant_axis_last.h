@@ -82,7 +82,7 @@ __aicore__ inline void SituMxQuantAxisLast<T, U, hasLinearBeta>::Init(
     GM_ADDR x, GM_ADDR y, GM_ADDR mxscale, GM_ADDR workspace,
     const SituMxQuantTilingData* __restrict tilingData, AscendC::TPipe* pipe)
 {
-#if (__NPU_ARCH__ == 3510)
+#if (__NPU_ARCH__ == 3510) || (__NPU_ARCH__ == 9201)
     AscendC::SetCtrlSpr<FLOAT_OVERFLOW_MODE_CTRL, FLOAT_OVERFLOW_MODE_CTRL>(0);
 #endif
     tiling_ = tilingData;

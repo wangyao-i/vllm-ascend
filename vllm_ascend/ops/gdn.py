@@ -228,6 +228,19 @@ def _rearrange_decode_qkv(
     )
 
 
+def _is_a6_without_fused_chunk() -> bool:
+    """Whether the fused aclnn chunk path must be skipped on this device."""
+    try:
+        from vllm_ascend.device.hardware_profile import (
+            HardwareCapability,
+            get_current_hardware_profile,
+        )
+
+        return not get_current_hardware_profile().supports(HardwareCapability.FLA_GDN_PREFILL)
+    except Exception:
+        return False
+
+
 class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
     @torch.no_grad()
     def _pack_conv_weights(self) -> None:
@@ -249,6 +262,13 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
         """
         if cls._fused_chunk_available is not None:
             return cls._fused_chunk_available
+
+        # A6-ADAPT: the arch35 fused chunk GEMM kernels time out on A6 AIC
+        # (507014), so the fused aclnn path is unusable there. Fall back to the
+        # Triton pipeline, which runs on A6.
+        if _is_a6_without_fused_chunk():
+            cls._fused_chunk_available = False
+            return False
 
         if not hasattr(torch_npu, "npu_chunk_gated_delta_rule"):
             cls._fused_chunk_available = False

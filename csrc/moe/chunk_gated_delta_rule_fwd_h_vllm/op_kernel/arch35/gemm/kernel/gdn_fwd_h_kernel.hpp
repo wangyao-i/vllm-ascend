@@ -7,7 +7,11 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  */
 
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
+#define CATLASS_ARCH 9201
+#else
 #define CATLASS_ARCH 3510
+#endif
 
 #include "catlass/arch/arch.hpp"
 #include "catlass/arch/cross_core_sync.hpp"
