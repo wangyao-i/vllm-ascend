@@ -63,6 +63,12 @@ def _ensure_global_patch():
     if _GLOBAL_PATCH_APPLIED:
         return
 
+    # CANN exposes unsupported DVPP modules on Ascend960 whose missing-attribute
+    # probes raise RuntimeError, including Python introspection dunder probes.
+    from vllm_ascend.patch.platform.patch_acl_dvpp_shim import apply as patch_acl_dvpp
+
+    patch_acl_dvpp()
+
     from vllm_ascend.mrv2_utils import apply_v2_model_runner_config_patch
     from vllm_ascend.utils import adapt_patch
 

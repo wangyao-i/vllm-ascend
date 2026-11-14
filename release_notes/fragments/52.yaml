@@ -1,0 +1,6 @@
+pr: 52
+entries:
+  - category: bugfix
+    text: >-
+      Avoided startup failures from ACL's unavailable DVPP placeholders on
+      Ascend960 when Python probes missing module attributes.
