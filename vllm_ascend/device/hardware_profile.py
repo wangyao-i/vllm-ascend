@@ -159,8 +159,8 @@ class HardwareCapability(Enum):
     # Import and register the compiled vLLM-Ascend custom-op library at runtime.
     # This is independent of whether custom ops are enabled by default.
     RUNTIME_CUSTOM_OPS = auto()
-    # The fused Gemma RMSNorm custom op needs aclnnGemmaRmsNorm, which CANN does
-    # not provide for A6 (no ascend960dt kernel).
+    # The fused Gemma RMSNorm custom op needs aclnnGemmaRmsNorm, which ships no
+    # ascend960dt binary.
     GEMMA_RMS_NORM_OP = auto()
     # The fused add+RMSNorm+bias custom op needs aclnnAddRmsNormBias, which
     # CANN does not provide for A6 (no libopapi symbol, no ascend960dt kernel).
