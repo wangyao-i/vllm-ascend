@@ -809,8 +809,8 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
 
             # Both fused prefill kernels (torch_npu.npu_chunk_gated_delta_rule and
             # fla_npu's chunk_gated_delta_rule_fwd) only support bfloat16 inputs.
-            # Gate on the model dtype so fp16 models (e.g. ColQwen3.5) fall back
-            # to the Triton pipeline instead of hitting an aclnn dtype error.
+            # Gate on the query activation dtype, not the projection weight
+            # storage dtype. fp16 queries (e.g. ColQwen3.5) use Triton.
             supports_fused_dtype = query_non_spec.dtype == torch.bfloat16
             use_fla_gdn_prefill = (
                 supports_fused_dtype
