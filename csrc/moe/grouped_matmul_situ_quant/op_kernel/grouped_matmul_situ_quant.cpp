@@ -32,7 +32,11 @@ extern "C" __global__ __aicore__ void grouped_matmul_situ_quant(
     GM_ADDR x, GM_ADDR xScale, GM_ADDR w, GM_ADDR wScale, GM_ADDR groupList,
     GM_ADDR y, GM_ADDR yScale, GM_ADDR workspace, GM_ADDR tiling)
 {
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202)
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);
+#else
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+#endif
     REGISTER_TILING_DEFAULT(GmmSituTilingData);
 #if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510)
     AscendC::AscendCUtils::SetOverflow(1);

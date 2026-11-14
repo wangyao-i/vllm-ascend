@@ -31,7 +31,7 @@ __global__ __aicore__ void situ_mx_quant(GM_ADDR x, GM_ADDR y, GM_ADDR mxscale, 
     GET_TILING_DATA_WITH_STRUCT(SituMxQuantTilingData, tilingData, tiling);
     GM_ADDR usrWorkspace = AscendC::GetUserWorkspace(workspace);
     TPipe pipe;
-#if (__NPU_ARCH__ == 3510)
+#if (__NPU_ARCH__ == 3510) || (__NPU_ARCH__ == 9201)
     int64_t oriOverflowMode = AscendC::GetCtrlSpr<FLOAT_OVERFLOW_MODE_CTRL, FLOAT_OVERFLOW_MODE_CTRL>();
 #endif
 
@@ -47,7 +47,7 @@ __global__ __aicore__ void situ_mx_quant(GM_ADDR x, GM_ADDR y, GM_ADDR mxscale, 
         op.Process();
     }
 
-#if (__NPU_ARCH__ == 3510)
+#if (__NPU_ARCH__ == 3510) || (__NPU_ARCH__ == 9201)
     AscendC::SetCtrlSpr<FLOAT_OVERFLOW_MODE_CTRL, FLOAT_OVERFLOW_MODE_CTRL>(oriOverflowMode);
 #endif
 }

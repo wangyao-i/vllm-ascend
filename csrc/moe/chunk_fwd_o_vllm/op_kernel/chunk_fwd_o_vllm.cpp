@@ -27,7 +27,11 @@ extern "C" __global__ __aicore__ void chunk_fwd_o_vllm(GM_ADDR q, GM_ADDR k, GM_
                                                          GM_ADDR g, GM_ADDR cu_seqlens, GM_ADDR chunk_offsets,
                                                          GM_ADDR o, GM_ADDR workspace, GM_ADDR tiling)
 {
-#ifdef CATLASS_UNIFIED_CORE
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201 || __NPU_ARCH__ == 9202)
+    // A6 (Ascend960DT/PR): Cube:Vector 是 1:1。用 A5 的 1:2 会让 AIC
+    // 死等不存在的 AIV 区，表现为 507014 aicore timeout。
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_1);
+#elif defined(CATLASS_UNIFIED_CORE)
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC);
 #else
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
