@@ -354,6 +354,10 @@ _A5_CAPABILITIES = frozenset(
 # A6-ADAPT: no compiled extension on A6
 _A6_UNSUPPORTED_CAPABILITIES = frozenset(
     {
+        # A6 CANN currently rejects fla_npu's ChunkGatedDeltaRuleFwd during
+        # CUDA graph warmup (GetWorkspaceSize: 169112). Use the existing
+        # torch_npu or Triton GDN prefill fallback instead.
+        HardwareCapability.FLA_GDN_PREFILL,
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
         # A6-ASC-FUSION: custom ops are available again. The kernel library

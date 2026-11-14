@@ -38,6 +38,7 @@ from vllm.v1.attention.backend import AttentionBackend, AttentionMetadata  # typ
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 
+from vllm_ascend import envs
 from vllm_ascend.attention.utils import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
@@ -484,6 +485,14 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
         # the layer load before conv/attention kernels touch mamba state.
         wait_for_kv_layer_from_connector(self.prefix)
         record_attention_compute_start()
+
+        # Diagnostic only: dummy weights do not produce meaningful outputs.
+        # Skip GDN kernels on A6 while testing the rest of the service stack.
+        # This must be explicitly enabled by the task launch script and must
+        # never be used with real model weights.
+        if envs.VLLM_ASCEND_DUMMY_SKIP_GDN:
+            core_attn_out.zero_()
+            return
 
         assert isinstance(attn_metadata, dict)
         attn_metadata = attn_metadata[self.prefix]
