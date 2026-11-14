@@ -79,6 +79,7 @@ from vllm.v1.kv_cache_interface import KVCacheSpec
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.dsa_v1 import AscendDSAImpl, OProjBufferPool
 from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec
+from vllm_ascend.device.delivered_op import delivered_op
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.models.common.ops.sequence_parallel import (
     sp_all_gather,
@@ -782,16 +783,55 @@ class DeepseekV4DecoderLayer(nn.Module):
         return hidden_states, hidden_states.float()
 
     def hc_pre(self, x: torch.Tensor, hc_fn: torch.Tensor, hc_scale: torch.Tensor, hc_base: torch.Tensor):
-        y = torch.ops._C_ascend.npu_hc_pre_v2(
-            x, hc_fn, hc_scale, hc_base, self.hc_mult, self.hc_sinkhorn_iters, self.norm_eps, self.hc_eps
+        # A6：树内 ``npu_hc_pre_v2`` 在本 CANN 上**挂死**（单算子实证 2026-11-13）：
+        #   npu_hc_pre_v2(x[8,4,4096], hc_fn[24,16384], scale[3], base[24], 4, 20, 1e-6, 1e-6)
+        # 打印完入参形状后无任何输出，200s 不返回、不报错；挂死后设备本身仍健康。
+        # PR50 注释 "aclnnHcPre is not in this CANN" 指的是同一件事。改用交付包融合 pre+sinkhorn。
+        # 三处契约差异在此消化：
+        #   * op 要 4-D ``[bs, seq, n, c]``，模型给 3-D ``[T, n, c]`` —— 补一个单位 seq 轴，
+        #     每个 token 自成长度 1 的序列，正是本 fork 的 per-token mHC 语义；
+        #   * eps 顺序是 ``(hc_eps, norm_eps)``，调用方是 ``(norm_eps, hc_eps)`` —— 交换；
+        #   * ``h_res`` 返回展平 ``[..., n*n]``，reshape 成 ``[..., n, n]`` 对齐 ``hc_post`` 的 comb。
+        # 包名 9.2 是 npu_ops_transformer、9.3 是 cann_ops_transformer，按 per-op 解析，
+        # 不写死（skill ascend-cann-upgrade-triage §1：两个包不能整包互换）。
+        fn = delivered_op("mhc_pre_sinkhorn")
+        added_axis = x.dim() == 3
+        if added_axis:
+            x = x.unsqueeze(1)  # [T, n, c] -> [T, 1, n, c]
+        # outFlag=False 只要主输出，后五个返回空，正好留前三个。
+        out = fn(
+            x,
+            hc_fn,
+            hc_scale,
+            hc_base,
+            self.hc_mult,
+            self.hc_sinkhorn_iters,
+            self.hc_eps,
+            self.norm_eps,
+            False,
         )
-        return y
+        if len(out) < 3:
+            raise RuntimeError(f"mhc_pre_sinkhorn returned {len(out)} values; the first three are used")
+        hin, h_post, h_res = out[0], out[1], out[2]
+        if added_axis:
+            hin = hin.squeeze(1)
+            h_post = h_post.squeeze(1)
+            h_res = h_res.squeeze(1)
+        comb = h_res.reshape(*h_res.shape[:-1], self.hc_mult, self.hc_mult)
+        return hin, h_post, comb
 
     def hc_post(self, x: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: torch.Tensor):
-        y = torch.ops._C_ascend.npu_hc_post(
-            x.unsqueeze(dim=0), residual.unsqueeze(dim=0), post.unsqueeze(dim=0), comb.unsqueeze(dim=0)
-        )
-        return y.squeeze(dim=0)
+        # A6：与 hc_pre 配套改用 PTA ``npu_mhc_post``。
+        # 注意树内 ``npu_hc_post`` **不是**挂死点 —— 单算子实测能正常返回：
+        #   npu_hc_post(x[1,8,4096], residual[1,8,4,4096], post[1,8,4], comb[1,8,4,4]) -> (1,8,4,4096)。
+        # 一起换掉只为让 pre/post 都走交付包这对组合（PR50 端到端验证过的正是它），
+        # 避免"交付 pre + 树内 post"这个没人跑过的混搭。
+        # 参数语义：x=残差流，**必须 3-D [T,n,D]**（传 2-D 报 "x dim should be 3 (TND format)"）；
+        # h_out=子层输出，2-D [T,D] 合法；comb 是 sinkhorn 后的双随机矩阵 [T,n,n]。
+        # 不要再补 unsqueeze(0)。
+        import torch_npu
+
+        return torch_npu.npu_mhc_post(residual, comb, x, post)
 
     def forward(
         self,

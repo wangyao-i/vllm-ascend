@@ -244,7 +244,10 @@ bool SparseAttnSharedkvMetadataCpuKernel::ParamsCheck()
 ValidSocVersion SparseAttnSharedkvMetadataCpuKernel::ProcessSocVersion()
 {
     const std::string ascend950 = "Ascend950";
-    if (socVersion_.find(ascend950) != std::string::npos) {
+    // A6-ASC-FUSION: A6(Ascend960DT) 与 A5 走同一条参数/分档路径
+    const std::string ascend960 = "Ascend960";
+    if ((socVersion_.find(ascend950) != std::string::npos) ||
+        (socVersion_.find(ascend960) != std::string::npos)) {
         return ValidSocVersion::ASCEND950;
     } else {
         return ValidSocVersion::ASCEND910;

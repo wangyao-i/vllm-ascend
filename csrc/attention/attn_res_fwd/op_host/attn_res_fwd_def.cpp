@@ -27,6 +27,8 @@ public:
             .DynamicShapeSupportFlag(true).NeedCheckSupportFlag(false)
             .ExtendCfgInfo("softsync.flag", "true").ExtendCfgInfo("opFile.value", "attn_res_fwd_apt");
         this->AICore().AddConfig("ascend950", config);
+        this->AICore().AddConfig("ascend960dt", config);
+        this->AICore().AddConfig("ascend960pr", config);
 
         this->AICore().AddConfig("ascend910_93", config);
         this->AICore().AddConfig("ascend960dt", config);

@@ -17,6 +17,7 @@ from vllm_ascend.attention.mixed_quant_sparse_flash_mla import (
     mixed_quant_sparse_flash_mla_turboquant,
 )
 from vllm_ascend.attention.sparse_flash_mla import sparse_flash_mla, sparse_flash_mla_metadata
+from vllm_ascend.device.delivered_op import delivered_op
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
 from vllm_ascend.quantization.methods.kv_cache.turboquant import is_turboquant
@@ -207,7 +208,7 @@ class DsaAttnKvPlan:
         # (same 8-bit storage; the in-place update lands in the original
         # tensor). quant_mode="fp8_bf16" (int 0): group(64) FP8(e4m3) with
         # bf16 scale, rope kept bf16.
-        torch.ops.cann_ops_transformer.kv_compress_epilog(
+        delivered_op("kv_compress_epilog")(
             cache=cache.view(torch.uint8),
             x=x.view(-1, x.shape[-1]),
             slot_mapping=slot_mapping,
