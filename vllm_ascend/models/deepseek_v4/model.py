@@ -30,6 +30,7 @@ from itertools import islice
 
 import torch
 import torch.nn.functional as F
+import torch_npu  # hoisted: ACLGraph capture forbids import inside forward
 import vllm.envs as envs
 from torch import nn
 from transformers import DeepseekV2Config, DeepseekV3Config
@@ -829,7 +830,6 @@ class DeepseekV4DecoderLayer(nn.Module):
         # 参数语义：x=残差流，**必须 3-D [T,n,D]**（传 2-D 报 "x dim should be 3 (TND format)"）；
         # h_out=子层输出，2-D [T,D] 合法；comb 是 sinkhorn 后的双随机矩阵 [T,n,n]。
         # 不要再补 unsqueeze(0)。
-        import torch_npu
 
         return torch_npu.npu_mhc_post(residual, comb, x, post)
 

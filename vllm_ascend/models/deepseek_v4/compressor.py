@@ -23,6 +23,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import contextlib
 import typing
 from dataclasses import dataclass
 
@@ -51,7 +52,12 @@ else:
     from transformers import DeepseekV4Config
 
 
-def _load_delivered_compressor():
+_UNSET = object()
+_COMPRESSOR_FN = _UNSET
+_OP_CACHE = {}
+
+
+def _load_delivered_compressor_uncached():
     """交付包 ``npu_compressor`` 的可调用对象；优先直接加载已编译的 .so。
 
     扩展名为 ``npu_compressor``（pybind，PyInit_npu_compressor），模块里导出一个同名函数，
@@ -78,10 +84,26 @@ def _load_delivered_compressor():
     return None
 
 
+def _load_delivered_compressor():
+    global _COMPRESSOR_FN
+    if _COMPRESSOR_FN is _UNSET:
+        _COMPRESSOR_FN = _load_delivered_compressor_uncached()
+    return _COMPRESSOR_FN
+
+
 _SYNCED_FIRST_CALL: set[str] = set()
 
 
 def _delivered_op(name: str):
+    cached = _OP_CACHE.get(name)
+    if cached is not None:
+        return cached
+    fn = _resolve_delivered_op(name)
+    _OP_CACHE[name] = fn
+    return fn
+
+
+def _resolve_delivered_op(name: str):
     """交付包里名为 ``name`` 的算子（9.2: ``npu_ops_transformer``，9.3: ``cann_ops_transformer``）。
 
     compressor 优先用直接加载的 pybind ``.so``（见 ``_load_delivered_compressor``），
@@ -602,3 +624,8 @@ class Compressor(nn.Module):
             cache_mode=1,
         )
         return compressed_kv, slot_mapping
+
+
+# 预热：捕获区里不允许 import / 加载 .so。交付包缺失时回退 torch.ops。
+with contextlib.suppress(Exception):
+    _load_delivered_compressor()
