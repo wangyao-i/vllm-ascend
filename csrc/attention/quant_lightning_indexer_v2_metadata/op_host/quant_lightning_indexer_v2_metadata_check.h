@@ -189,7 +189,12 @@ aclnnStatus CheckSingleParamQliV2(int64_t numHeadsQ, int64_t numHeadsK, int64_t 
         return ACLNN_ERR_PARAM_INVALID;
     }
     // 校验 A2/A3 参数
-    if (socVersion.find("Ascend950") == std::string::npos) {
+    // A6-ASC-FUSION: A6(Ascend960DT) 的 fp8 indexer 与 A5 同构，必须走下面的 A5 分支；
+    // 否则会被当成 A2/A3 而拒绝 quant_mode=1，实测报
+    //   AclNN_Parameter_Error(EZ1001): quant_mode should be 2, but got 1
+    const bool isA5OrNewer = (socVersion.find("Ascend950") != std::string::npos) ||
+                             (socVersion.find("Ascend960") != std::string::npos);
+    if (!isA5OrNewer) {
         // num_heads_q 校验 (g=64/32, 32 参照 v1 对齐 mBaseSize=4*g 推导)
         CHECK_COND((numHeadsQ == QLI_V2_NUM_HEADS_Q_UPPER_BOUND) || (numHeadsQ == QLI_V2_NUM_HEADS_Q_G32),
                    ACLNN_ERR_PARAM_INVALID,

@@ -5,7 +5,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from importlib import import_module
 from typing import Any
 
 import torch
@@ -19,6 +18,7 @@ from vllm_ascend.attention.mixed_quant_sparse_flash_mla import (
     mixed_quant_sparse_flash_mla_turboquant,
 )
 from vllm_ascend.attention.sparse_flash_mla import sparse_flash_mla, sparse_flash_mla_metadata
+from vllm_ascend.device.delivered_op import delivered_op
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.triton.triton_utils import get_vectorcore_num
 from vllm_ascend.quantization.methods.kv_cache.turboquant import is_turboquant
@@ -30,8 +30,7 @@ _BF16_KV_CACHE_DTYPES = frozenset({"auto", "bfloat16", "bf16"})
 
 @lru_cache(maxsize=1)
 def _get_kv_compress_epilog() -> Callable[..., Any]:
-    import_module("cann_ops_transformer")
-    return torch.ops.cann_ops_transformer.kv_compress_epilog
+    return delivered_op("kv_compress_epilog")
 
 
 def _supports_dsv4_compressed_cache() -> bool:

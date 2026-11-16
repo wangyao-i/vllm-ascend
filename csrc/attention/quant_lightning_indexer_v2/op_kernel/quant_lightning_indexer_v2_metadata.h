@@ -21,8 +21,15 @@
 namespace optiling {
 
 // Constants
-inline constexpr uint32_t AIC_CORE_MAX_NUM = 36;
-inline constexpr uint32_t AIV_CORE_MAX_NUM = 72;
+// A6-ASC-FUSION: Ascend960DT(968B7) 实测 AIC=64 / AIV=64
+// (torch.npu.get_device_properties -> cube_core_num=64, vector_core_num=64)。
+// 原值 36/72 是 A5 规格；A6 走 in-tree 路线会以 64 核调用本算子，触发
+//   AclNN_Parameter_Error(EZ1001): The maximum supported AIC num is 80, but got 64
+// 64*8(Qli) + 64*8(Qld) = 1024 = QLI_V2_METADATA_TOTAL_SIZE，正好装满，说明 64/64 是本布局的满配。
+// hidden: 这两个符号与 CANN 核心库 libopapi.so 同名(其值 80)，不隐藏会被动态链接期抢占，
+// 出现"判定用 36、日志打印 80"的自相矛盾输出，排查会被带偏。
+inline constexpr uint32_t AIC_CORE_MAX_NUM __attribute__((visibility("hidden"))) = 64;
+inline constexpr uint32_t AIV_CORE_MAX_NUM __attribute__((visibility("hidden"))) = 64;
 constexpr uint32_t QLI_V2_METADATA_TOTAL_SIZE = 1024;
 using QLI_V2_METADATA_T = int32_t;
 

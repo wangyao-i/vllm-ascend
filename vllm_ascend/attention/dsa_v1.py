@@ -102,6 +102,12 @@ else:
 SAS_METADATA_BUFFER_SIZE = 1024
 SPARSE_FLASH_MLA_METADATA_BUFFER_SIZE = 2048
 QLI_METADATA_BUFFER_SIZE = 1024
+# A6-ASC-FUSION: 交付包 mixed_quant_sparse_flash_mla_metadata / npu_quant_lightning_indexer_metadata
+# 返回 **2048** int32，而 in-tree 的 SAS/QLI metadata 是 1024（QLI_V2_METADATA_TOTAL_SIZE）。
+# 两种实现共存时 buffer 必须按大的那个分配，写入时按实际 numel 截断，
+# 否则报 "expanded size (1024) must match existing size (2048)"。
+# 判据来源：skill vllm-ascend-a6-real-bringup §6.2 / known-errors KE-016。
+DSA_DELIVERED_METADATA_SIZE = 2048
 
 
 class OProjBufferPool:
@@ -889,8 +895,10 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         self.sas_metadata_buffer: torch.Tensor = torch.zeros(
             self.sas_metadata_buffer_size, dtype=torch.int32, device=self.device
         )
+        # A6: 交付包的 npu_quant_lightning_indexer_metadata 返回 2048 个 int32（in-tree 是 1024），
+        # buffer 按交付尺寸分配，否则赋值时会被窄化成 1024 并报 size mismatch。
         self.qli_metadata_buffer: torch.Tensor = torch.zeros(
-            QLI_METADATA_BUFFER_SIZE, dtype=torch.int32, device=self.device
+            max(QLI_METADATA_BUFFER_SIZE, DSA_DELIVERED_METADATA_SIZE), dtype=torch.int32, device=self.device
         )
         # QLI v2 PA_BBND reads the compressed K length plus the residual from
         # the original length. Persistent buffers keep their addresses stable
@@ -1114,6 +1122,13 @@ class AscendDSAMetadataBuilder(AttentionMetadataBuilder[AscendDSAMetadata]):
         )
 
     def enable_device_metadata(self) -> None:
+        # A6 实验：eager+prefill 下异步元数据握手会永久阻塞（见 NOTES-2026-11-14），
+        # 用 A6_NO_DEVICE_METADATA=1 强制走同步构建。
+        import os as _os
+
+        if _os.environ.get("A6_NO_DEVICE_METADATA") == "1":
+            self._device_metadata_enabled = False
+            return
         self._device_metadata_enabled = True
         if self.compressor_ratio > 1 and self.vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.FULL:
             max_tokens = self.vllm_config.scheduler_config.max_num_batched_tokens
@@ -1774,7 +1789,8 @@ class AscendDSAAttentionMetadataBuilder(AscendDSAMetadataBuilder):
             if key not in self._sas_variant_buffers:
                 self._sas_variant_buffers[key] = torch.empty_like(output)
             output = self._sas_variant_buffers[key]
-        output[: self.sas_metadata_buffer_size] = sas_metadata
+        # 交付 op 给 2048、in-tree 给 1024：按实际长度写，别用固定常量
+        output[: sas_metadata.numel()] = sas_metadata
         if use_specialized_metadata:
             metadata_cache[output_key] = output
         return output
@@ -2024,7 +2040,7 @@ class AscendDSAIndexerMetadataBuilder(AscendDSAAttentionMetadataBuilder):
 
         qli_metadata = metadata_cache.get("qli")
         if qli_metadata is None:
-            qli_metadata = torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(
+            qli_metadata = DeviceOperator.get_dsa_lightning_indexer_metadata_op(
                 num_heads_q=self.model_config.hf_config.index_n_heads,  # 64
                 num_heads_k=1,
                 head_dim=self.model_config.hf_config.index_head_dim,  # 128
@@ -2044,7 +2060,7 @@ class AscendDSAIndexerMetadataBuilder(AscendDSAAttentionMetadataBuilder):
             )
             metadata_cache["qli"] = qli_metadata
 
-        self.qli_metadata_buffer[:QLI_METADATA_BUFFER_SIZE] = qli_metadata
+        self.qli_metadata_buffer[: qli_metadata.numel()] = qli_metadata
         if use_specialized_metadata:
             metadata_cache["qli_output"] = (self.qli_metadata_buffer, qli_seqused_k, qli_cmp_residual_k)
         return self.qli_metadata_buffer
