@@ -26,6 +26,7 @@ import torch_npu
 from vllm.triton_utils import HAS_TRITON
 
 from vllm_ascend.device import utils as device_utils
+from vllm_ascend.device.delivered_op import delivered_op_or_none
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 from vllm_ascend.device.paged_mla_cache_read import try_load_strided_mla_cache
 from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
@@ -740,10 +741,16 @@ class BaseDeviceAdaptor:
     @staticmethod
     def unpack_dsa_indexer_kv_cache(kv_cache):
         """Unpack indexer kv_cache tuple.
-        Non-A5: returns (state_cache, k_cache, scale_cache, None).
-        A5: returns (state_cache, k_cache, scale_cache, full_cache)."""
-        _, _, _, indexer_state_cache, indexer_k_cache, indexer_scale_cache = kv_cache
-        return indexer_state_cache, indexer_k_cache, indexer_scale_cache, None
+
+        The layout follows the *profile capability*, not the device family: any
+        profile that advertises ``DSV4_COMPRESSED_CACHE`` (A5, and A6 here)
+        appends ``indexer_full_cache`` as a seventh element. Slice the common
+        prefix and take the tail only when it is actually there, so both the
+        6-element and the 7-element tuples unpack correctly.
+        """
+        _, _, _, indexer_state_cache, indexer_k_cache, indexer_scale_cache = kv_cache[:6]
+        indexer_full_cache = kv_cache[6] if len(kv_cache) > 6 else None
+        return indexer_state_cache, indexer_k_cache, indexer_scale_cache, indexer_full_cache
 
     @staticmethod
     def unpack_dsa_forward_kv_cache(kv_cache, compress_ratio):
@@ -1972,6 +1979,216 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         return tensor
 
 
+class A6DeviceAdaptor(BaseDeviceAdaptor):
+    """A6 adaptations: base behaviour plus the fp8 indexer family.
+
+    Everything the DSA path needs that differs from the base adaptor is decided
+    by one axis: this profile runs the fp8 indexer KV plan (``indexer_kv_dtype
+    == "fp8"``) and therefore carries the A5-shaped compressed cache, i.e. an
+    ``indexer_full_cache`` filled by the fused ``indexer_compress_epilog_v2``.
+    The base adaptor instead does int8 quantisation plus two separate
+    ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
+    (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
+
+    Only that family is overridden, by delegation to the A5 implementation, so
+    the difference stays visible and each delegation can be checked against the
+    op contract that forced it. Everything else keeps the base behaviour, in
+    particular the weight layouts the A6 kernels were validated with.
+    """
+
+    # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
+
+    @staticmethod
+    def get_dsa_indexer_quant_mode() -> int:
+        # A6 跑 fp8 indexer plan（--attention_config.indexer_kv_dtype fp8），indexer cache 是
+        # A5-shape 压缩 fp8 cache，因此量化口径与 A5 一致（QUANT_MODE_FP8 = 1）。
+        # in-tree QLI v2 在 A6 上只编了 arch22(INT8) 内核，fp8 调用必须走交付包
+        # （见 get_dsa_lightning_indexer_op），所以这里保持 A5 口径。
+        return A5DeviceAdaptor.get_dsa_indexer_quant_mode()
+
+    @staticmethod
+    def prepare_dsa_indexer_weights(weights):
+        return A5DeviceAdaptor.prepare_dsa_indexer_weights(weights)
+
+    @staticmethod
+    def prepare_dsa_indexer_query_scale(q_scale):
+        return A5DeviceAdaptor.prepare_dsa_indexer_query_scale(q_scale)
+
+    @staticmethod
+    def prepare_dsa_indexer_key_scale(indexer_scale_cache):
+        return A5DeviceAdaptor.prepare_dsa_indexer_key_scale(indexer_scale_cache)
+
+    @staticmethod
+    def indexer_quantize_query(q):
+        return A5DeviceAdaptor.indexer_quantize_query(q)
+
+    @staticmethod
+    def indexer_quant_scatter(q, kv, indexer_k_cache, indexer_scale_cache, indexer_full_cache, slot_mapping):
+        return A5DeviceAdaptor.indexer_quant_scatter(
+            q, kv, indexer_k_cache, indexer_scale_cache, indexer_full_cache, slot_mapping
+        )
+
+    @staticmethod
+    def indexer_quant_scatter_part1(kv, indexer_k_cache, indexer_full_cache, slot_mapping):
+        return A5DeviceAdaptor.indexer_quant_scatter_part1(kv, indexer_k_cache, indexer_full_cache, slot_mapping)
+
+    @staticmethod
+    def dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping):
+        return A5DeviceAdaptor.dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping)
+
+    # --- lightning indexer op selection: delivered V2 (A6 fp8 kernel), in-tree fallback ---
+
+    @staticmethod
+    def _delivered_lightning_indexer_op(name):
+        # 9.2: npu_ops_transformer::npu_quant_lightning_indexer
+        # 9.3: cann_ops_transformer::quant_lightning_indexer
+        return delivered_op_or_none(name[4:] if name.startswith("npu_") else name)
+
+    @staticmethod
+    def get_dsa_lightning_indexer_op():
+        # A6 的 fp8 量化口径需要 ascend960dt 的 fp8 内核，只有交付包
+        # npu_quant_lightning_indexer 提供；in-tree v2 在 A6 上只编了 INT8(arch22)。
+        delivered = A6DeviceAdaptor._delivered_lightning_indexer_op("npu_quant_lightning_indexer")
+        if delivered is not None:
+            return delivered
+        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2
+
+    @staticmethod
+    def get_dsa_lightning_indexer_metadata_op(**kwargs):
+        # 交付包的 metadata 算子没有 in-tree 的 `device` 关键字，调用前摘掉。
+        delivered = A6DeviceAdaptor._delivered_lightning_indexer_op("npu_quant_lightning_indexer_metadata")
+        if delivered is not None:
+            kwargs.pop("device", None)
+            return delivered(**kwargs)
+        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(**kwargs)
+
+    @staticmethod
+    def indexer_select_post_process(
+        q_li,
+        q_li_scale,
+        q_li_shape_ori,
+        weights,
+        kv_cache,
+        indexer_k_cache_idx,
+        indexer_scale_cache_idx,
+        attn_metadata,
+        actual_seq_lengths_query,
+        actual_seq_lengths_key,
+        enable_sparse_li_c8,
+        enable_sparse_li_c4,
+        use_torch_npu_lightning_indexer,
+    ):
+        """A6: the c8 indexer must use the DELIVERED npu_ops_transformer op.
+
+        ``attention/indexer.py`` is the indexer this DeepSeek-V4 build actually
+        runs; the base/A5 implementations call ``torch_npu.npu_quant_lightning_indexer``
+        (a PTA op, different operator) whereas A6 only has an fp8 ascend960dt
+        kernel for the delivered ``npu_quant_lightning_indexer``
+        (aclnnQuantLightningIndexerV2).  Route it through the delivered op.
+
+        ``A6_IN_TREE_INDEXER=1`` restores the old PTA path for A/B comparison.
+
+        Shape rules come from the delivered tiling (CheckScaleShape):
+        ``key_dequant_scale.shape == key.shape[:-1]``; ``weights`` must be 2-D;
+        ``layout_key`` accepts PA_BSND/PA_BBND (both map to PA_BSND); TND query
+        needs ``cu_seqlens_q`` (b+1 cumulative).
+        """
+        import os as _os
+
+        if not enable_sparse_li_c8 or _os.environ.get("A6_IN_TREE_INDEXER") == "1":
+            return A5DeviceAdaptor.indexer_select_post_process(
+                q_li,
+                q_li_scale,
+                q_li_shape_ori,
+                weights,
+                kv_cache,
+                indexer_k_cache_idx,
+                indexer_scale_cache_idx,
+                attn_metadata,
+                actual_seq_lengths_query,
+                actual_seq_lengths_key,
+                enable_sparse_li_c8,
+                enable_sparse_li_c4,
+                use_torch_npu_lightning_indexer,
+            )
+        if enable_sparse_li_c4:
+            raise RuntimeError("C4 lightning indexer is only supported on A5 devices.")
+
+        import torch.nn.functional as F
+
+        key = kv_cache[indexer_k_cache_idx]
+        key_scale = kv_cache[indexer_scale_cache_idx]
+        if key_scale.dim() == key.dim():
+            key_scale = key_scale.squeeze(-1) if key_scale.shape[-1] == 1 else key_scale.reshape(tuple(key.shape[:-1]))
+        query = q_li.view(q_li_shape_ori)
+        query_scale = q_li_scale.view(q_li_shape_ori[:-1])
+        cu_seqlens_q = F.pad(actual_seq_lengths_query, (1, 0), value=0)
+        seqused_k = actual_seq_lengths_key
+
+        if _os.environ.get("A6_QLI_DBG") == "1":
+            import sys as _s
+
+            print(
+                f"[A6QLI] q={tuple(query.shape)} {query.dtype} k={tuple(key.shape)} {key.dtype} "
+                f"qs={tuple(query_scale.shape)} {query_scale.dtype} "
+                f"ks={tuple(key_scale.shape)} {key_scale.dtype} w={tuple(weights.shape)} "
+                f"seqused_k={tuple(seqused_k.shape)} bt={tuple(attn_metadata.block_table.shape)}",
+                file=_s.stderr,
+                flush=True,
+            )
+
+        metadata = A6DeviceAdaptor.get_dsa_lightning_indexer_metadata_op(
+            num_heads_q=query.shape[1],
+            num_heads_k=1,
+            head_dim=query.shape[-1],
+            topk=2048,
+            quant_mode=1,
+            cu_seqlens_q=cu_seqlens_q,
+            seqused_k=seqused_k,
+            batch_size=seqused_k.shape[0],
+            max_seqlen_q=-1,
+            max_seqlen_k=-1,
+            layout_q="TND",
+            layout_k="PA_BSND",
+            mask_mode=3,
+            cmp_ratio=1,
+        )
+        topk_indices, _ = A6DeviceAdaptor.get_dsa_lightning_indexer_op()(
+            query=query,
+            key=key,
+            weights=weights.to(torch.float32),
+            query_dequant_scale=query_scale,
+            key_dequant_scale=key_scale,
+            topk=2048,
+            quant_mode=1,
+            cu_seqlens_q=cu_seqlens_q,
+            seqused_k=seqused_k,
+            block_table=attn_metadata.block_table,
+            metadata=metadata,
+            max_seqlen_q=-1,
+            layout_q="TND",
+            layout_k="PA_BSND",
+            mask_mode=3,
+            cmp_ratio=1,
+            return_value=0,
+        )
+        return topk_indices
+
+    # --- decode metadata for the compressed cache ---
+
+    @staticmethod
+    def get_dsa_decode_cu_seqlens_cmp_kv(cmp_kv_tensor):
+        return A5DeviceAdaptor.get_dsa_decode_cu_seqlens_cmp_kv(cmp_kv_tensor)
+
+    @staticmethod
+    def get_dsa_decode_cu_seqlens_ori_kv(
+        decode_ratio_to_sas_metadata, cache_key, seq_lens, num_decodes, zero_i32, fallback_cu_seqlens
+    ):
+        return A5DeviceAdaptor.get_dsa_decode_cu_seqlens_ori_kv(
+            decode_ratio_to_sas_metadata, cache_key, seq_lens, num_decodes, zero_i32, fallback_cu_seqlens
+        )
+
+
 class Ascend310PDeviceAdaptor(BaseDeviceAdaptor):
     @classmethod
     def reshape_and_cache(
@@ -2038,6 +2255,7 @@ def get_device_adaptor() -> type["BaseDeviceAdaptor"]:
     adaptor_by_family = {
         DeviceAdaptorFamily.STANDARD: BaseDeviceAdaptor,
         DeviceAdaptorFamily.FP8_OPTIMIZED: A5DeviceAdaptor,
+        DeviceAdaptorFamily.A6: A6DeviceAdaptor,
         DeviceAdaptorFamily.COMPATIBILITY: Ascend310PDeviceAdaptor,
     }
     return adaptor_by_family[get_current_hardware_profile().device_adaptor_family]

@@ -36,6 +36,7 @@ from vllm_ascend.core.kv_cache_interface import (
     get_kv_cache_compression_ratio,
     get_storage_block_size,
 )
+from vllm_ascend.device.delivered_op import delivered_op
 from vllm_ascend.device.hardware_profile import AttentionBackendFamily, HardwareCapability, get_current_hardware_profile
 
 GLM5_NEXT_SFA_KERNEL_BLOCK_SIZE = 128
@@ -947,10 +948,10 @@ class Glm5NextKPoolIndexerBackend(nn.Module):
             self._pack_keypool_indices = fused.pack_keypool_indices
             self._prepare_keypool_state = adapters.prepare_keypool_state
             self._write_keypool_caches = fused.write_keypool_caches
-            self._key_pool = torch.ops.cann_ops_transformer.key_pool
+            self._key_pool = delivered_op("key_pool")
             self._pool_key_indexer = adapters.pool_key_indexer_nonempty
-            self._cann_pool_key_indexer = torch.ops.cann_ops_transformer.pool_key_indexer
-        except (ImportError, AttributeError) as exc:
+            self._cann_pool_key_indexer = delivered_op("pool_key_indexer")
+        except (ImportError, AttributeError, RuntimeError) as exc:
             raise RuntimeError(
                 "GLM-5.3-Flash KPool requires cann_ops_transformer with key_pool and pool_key_indexer, "
                 "the matching CANN ops-transformer operator package and Triton cache/index adapters."

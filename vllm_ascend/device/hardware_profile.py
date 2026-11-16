@@ -199,6 +199,7 @@ class DeviceAdaptorFamily(Enum):
     STANDARD = auto()
     FP8_OPTIMIZED = auto()
     COMPATIBILITY = auto()
+    A6 = auto()
 
 
 class DeviceAddressingMode(Enum):
@@ -513,7 +514,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
             attention_backend_family=AttentionBackendFamily.STANDARD,
             cpu_binding_mode=CPUBindingMode.TOPO_AFFINITY,
             default_worker_cls=_DEFAULT_WORKER_CLS,
-            device_adaptor_family=DeviceAdaptorFamily.STANDARD,
+            device_adaptor_family=DeviceAdaptorFamily.A6,
             device_addressing_mode=DeviceAddressingMode.DIRECT,
             weight_layout_policy=WeightLayoutPolicy.CONFIGURABLE,
             moe_comm_policy=MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,

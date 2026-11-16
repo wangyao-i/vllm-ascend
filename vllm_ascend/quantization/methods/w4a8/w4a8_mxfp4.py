@@ -25,6 +25,7 @@ from vllm.model_executor.layers.fused_moe.activation import MoEActivation
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, use_cann_megamoe
+from vllm_ascend.device.device_config import AscendDeviceType, get_ascend_device_type
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.ops.fused_moe.dataclass.fused_experts import MoEWeights, build_fused_experts_input
 from vllm_ascend.ops.fused_moe.dataclass.moe_mlp import MoEMlpComputeInput
@@ -355,18 +356,34 @@ class AscendW4A8MXFPDynamicFusedMoEMethod(AscendMoEScheme):
                 # The native GMSQ schema requires FP4 semantic dtype metadata.
                 w13 = w13.view(torch.float4_e2m1fn_x2)
                 w13_input_dtype = torch.float4_e2m1fn_x2
-            layer.w13_weight.data = torch_npu.npu_format_cast(
-                w13,
-                ACL_FORMAT_FRACTAL_NZ,
-                customize_dtype=torch.float8_e4m3fn,
-                input_dtype=w13_input_dtype,
-            )
-            layer.w2_weight.data = torch_npu.npu_format_cast(
-                layer.w2_weight.data,
-                ACL_FORMAT_FRACTAL_NZ,
-                customize_dtype=torch.float8_e4m3fn,
-                input_dtype=torch_npu.float4_e2m1fn_x2,
-            )
+            if get_ascend_device_type() == AscendDeviceType.A6:
+                # Bare NZ cast: grouped-matmul tiling derives C0 from the tensor's
+                # own dtype. The customize_dtype/input_dtype hints make the packed
+                # FP4 weight look 8-bit, so the NZ weight comes out with C0=32 and
+                # aclnnGroupedMatmulWeightNz rejects it on A6 (EZ1001: "The C0 of
+                # weight with NZ format should be [64], but the actual value is
+                # [32]"). Cast the byte payload (uint8 view) instead; a bare cast
+                # of the FP4 semantic view trips aclnnNpuFormatCast's
+                # "not support recovery format" branch.
+                layer.w13_weight.data = torch_npu.npu_format_cast(
+                    layer.w13_weight.data.view(torch.uint8), ACL_FORMAT_FRACTAL_NZ
+                )
+                layer.w2_weight.data = torch_npu.npu_format_cast(
+                    layer.w2_weight.data.view(torch.uint8), ACL_FORMAT_FRACTAL_NZ
+                )
+            else:
+                layer.w13_weight.data = torch_npu.npu_format_cast(
+                    w13,
+                    ACL_FORMAT_FRACTAL_NZ,
+                    customize_dtype=torch.float8_e4m3fn,
+                    input_dtype=w13_input_dtype,
+                )
+                layer.w2_weight.data = torch_npu.npu_format_cast(
+                    layer.w2_weight.data,
+                    ACL_FORMAT_FRACTAL_NZ,
+                    customize_dtype=torch.float8_e4m3fn,
+                    input_dtype=torch_npu.float4_e2m1fn_x2,
+                )
             layer.w13_weight.data = layer.w13_weight.data.transpose(1, 2)
             layer.w2_weight.data = layer.w2_weight.data.transpose(1, 2)
             layer.w13_weight_scale.data = layer.w13_weight_scale.data.transpose(-3, -2)
