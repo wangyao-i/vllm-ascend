@@ -291,6 +291,8 @@ def test_mla_nz_management_respects_hardware_profile(device_type, enable_mlapo, 
     impl = AscendMLAImpl.__new__(AscendMLAImpl)
     impl.use_flashmla = False
     impl.dcp_q_replicate_enabled = False
+    # Isolate MLAPO/FA-quant policy from the strided-cache writer.
+    impl.use_mla_rope = False
     profile = get_hardware_profile(device_type)
     impl.support_fp8_attention = profile.supports(HardwareCapability.FP8_ATTENTION)
     impl.enable_mlapo = enable_mlapo

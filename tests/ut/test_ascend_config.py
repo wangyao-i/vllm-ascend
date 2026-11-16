@@ -23,7 +23,7 @@ from importlib.util import find_spec as real_find_spec
 from statistics import NormalDist
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from vllm.config import DeviceConfig, KVTransferConfig
 from vllm.config import VllmConfig as _VllmConfig
@@ -1416,6 +1416,24 @@ class TestUpstreamConfigCompatibility(TestBase):
         "vllm_ascend.ascend_config.get_current_hardware_profile",
         return_value=get_hardware_profile(AscendDeviceType.A5),
     )
+    def test_a5_megamoe_qwen4exp_hidden_size_2560(self, _mock_profile):
+        text_config = SimpleNamespace(hidden_size=2560, moe_intermediate_size=640, num_experts_per_tok=10)
+        model_config = SimpleNamespace(
+            architectures=["Qwen4ExpForConditionalGeneration"],
+            hf_text_config=text_config,
+            get_num_experts=lambda: 512,
+        )
+        parallel_config = SimpleNamespace(world_size_across_dp=4, pipeline_parallel_size=1)
+        vllm_config = SimpleNamespace(model_config=model_config, parallel_config=parallel_config)
+
+        self.assertTrue(AscendConfig._is_megamoe_supported_by_config(vllm_config))
+        with patch.object(text_config, "hidden_size", 2688):
+            self.assertFalse(AscendConfig._is_megamoe_supported_by_config(vllm_config))
+
+    @patch(
+        "vllm_ascend.ascend_config.get_current_hardware_profile",
+        return_value=get_hardware_profile(AscendDeviceType.A5),
+    )
     def test_a5_megamoe_minimax_config_and_existing_guards(self, _mock_profile):
         text_config = SimpleNamespace(hidden_size=6144, intermediate_size=3072, num_experts_per_tok=4)
         model_config = SimpleNamespace(
@@ -2234,6 +2252,24 @@ class TestKVPPConfig(TestBase):
 
 
 class TestEngramSharedMemoryDefaults(TestBase):
+    def test_qwen_ple_keeps_private_host_tables_with_dp(self):
+        for architecture in ("Qwen4ExpForCausalLM", "Qwen4ExpForConditionalGeneration", "Qwen4ExpMTP"):
+            with self.subTest(architecture=architecture):
+                config = VllmConfig(device_config=DeviceConfig(device="cpu"))
+                config.parallel_config.data_parallel_size = 4
+                config.model_config = MagicMock(
+                    architecture=architecture,
+                    architectures=[architecture],
+                    is_deepseek_mla=False,
+                    enforce_eager=False,
+                    is_moe=True,
+                )
+                config.engram_config = SimpleNamespace(dp_shared_memory=False)
+                ascend_config = AscendConfig(sparse_kv_offload_config=SparseKVOffloadConfig())
+                with patch.object(_VllmConfig, "use_v2_model_runner", new_callable=PropertyMock, return_value=True):
+                    ascend_config.derive_and_validate(config)
+                self.assertFalse(config.engram_config.dp_shared_memory)
+
     def test_shared_tables_are_derived_for_mrv2_dp_or_pcp(self):
         topologies = (
             (1, 1, False),

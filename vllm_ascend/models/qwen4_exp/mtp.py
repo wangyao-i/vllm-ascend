@@ -22,12 +22,53 @@ from vllm.config import VllmConfig
 from vllm.distributed import get_pp_group
 from vllm.models.qwen4_exp.amd import mtp as upstream_mtp
 from vllm.sequence import IntermediateTensors
+from vllm.transformers_utils.config import iter_rope_parameters
+
+from vllm_ascend.models.common.ops.sequence_parallel import sp_all_gather, sp_shard
 
 # Import the target wrapper first so the upstream decoder resolves Ascend QSA
 # and HyperConnection components before the MTP module is initialized.
 from . import model as _model  # noqa: F401
 
 _MTP_LAYER_PREFIX = re.compile(r"^mtp\.layers\.(\d+)(?=\.)")
+
+
+def _align_qwen4_exp_mtp_position_cache(vllm_config: VllmConfig) -> None:
+    """Size Qwen4Exp's MTP RoPE cache for the target position space."""
+    speculative_config = vllm_config.speculative_config
+    if speculative_config is None:
+        return
+
+    draft_model_config = speculative_config.draft_model_config
+    target_model_config = speculative_config.target_model_config
+    if draft_model_config is None or target_model_config is None:
+        return
+
+    architectures = set(draft_model_config.architectures or ())
+    if "Qwen4ExpMTP" not in architectures:
+        return
+
+    draft_text_config = draft_model_config.hf_text_config
+    draft_max_position_embeddings = getattr(
+        draft_text_config,
+        "max_position_embeddings",
+        None,
+    )
+    target_max_model_len = target_model_config.max_model_len
+    if draft_max_position_embeddings is None or draft_max_position_embeddings >= target_max_model_len:
+        return
+
+    # Dict-style target HF overrides are not applied to the nested MTP draft.
+    # Only grow Qwen4Exp's plain RoPE cache; copying target YaRN parameters would
+    # change the draft's rotary frequencies rather than just its cache capacity.
+    if not all(params.get("rope_type", "default") == "default" for params in iter_rope_parameters(draft_text_config)):
+        return
+
+    draft_text_config.max_position_embeddings = target_max_model_len
+    draft_model_config.max_model_len = max(
+        draft_model_config.max_model_len,
+        target_max_model_len,
+    )
 
 
 def _remap_modelslim_mtp_layer_ids(
@@ -70,6 +111,9 @@ def _make_draft_vllm_config(
     vllm_config: VllmConfig,
     mtp_start_layer_idx: int,
 ) -> VllmConfig:
+    # Run before the Qwen4Exp MTP layers construct their rotary embeddings so
+    # graph capture cannot retain an undersized cache.
+    _align_qwen4_exp_mtp_position_cache(vllm_config)
     draft_vllm_config = _upstream_make_draft_vllm_config(
         vllm_config,
         mtp_start_layer_idx,
@@ -132,6 +176,12 @@ class AscendQwen4ExpMultiTokenPredictor(upstream_mtp.Qwen4ExpMultiTokenPredictor
 
         current_step_idx = spec_step_idx % self.num_mtp_layers
         layer = self.layers[current_step_idx]
+        # The local MTP drafter is constructed with PP=1 even when the target
+        # model runs with PP>1. Depending on the runner path, its target hidden
+        # state is either full-token or already SP-local. Shard only the former;
+        # global PP rank is not a valid indicator for this local model.
+        if layer.use_sequence_parallel and hidden_states.shape[0] == positions.shape[-1]:
+            hidden_states = sp_shard(hidden_states)
         hidden_states, block_output, injection = layer(
             hidden_states=hidden_states,
             prev_block_output=None,
@@ -148,6 +198,11 @@ class AscendQwen4ExpMultiTokenPredictor(upstream_mtp.Qwen4ExpMultiTokenPredictor
         multi_hidden, sample_hidden_states, _ = self.hyper_connection_mixer.combine_and_mix(
             hidden_states, block_output, injection
         )
+        if layer.use_sequence_parallel:
+            full_num_tokens = positions.shape[-1]
+            multi_hidden_size = multi_hidden.shape[-1]
+            gathered_hidden = sp_all_gather(torch.cat((multi_hidden, sample_hidden_states), dim=-1))[:full_num_tokens]
+            multi_hidden, sample_hidden_states = gathered_hidden.split((multi_hidden_size, hidden_size), dim=-1)
         return sample_hidden_states, multi_hidden
 
 

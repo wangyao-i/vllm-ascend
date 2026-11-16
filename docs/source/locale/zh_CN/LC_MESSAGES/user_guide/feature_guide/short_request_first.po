@@ -272,7 +272,7 @@ msgid ""
 "(`kv_role='kv_consumer'`)."
 msgstr ""
 "ShortRequestFirst 仅改变等待队列策略。它要求使用 FCFS 调度，并同时支持同步和异步调度，包括与 profiling-chunk "
-"调度组合使用。它不支持与批作业感知调度（batch-job-aware scheduling）一起使用，也不支持在 PD 分离的 D "
+"调度组合使用。它不支持与 batch-job-aware 调度组合使用，也不支持在 PD 分离的 D "
 "节点（`kv_role='kv_consumer'`）上使用。"
 
 msgid ""

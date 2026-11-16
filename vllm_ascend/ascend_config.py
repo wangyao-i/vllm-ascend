@@ -693,6 +693,10 @@ class AscendConfig:
         if (
             engram_config is not None
             and not engram_config.dp_shared_memory
+            # Qwen PLE owns private host tables; shared memory is opt-in via
+            # dp_shared_memory and off by default for Qwen4Exp.
+            and getattr(vc.model_config, "architecture", None)
+            not in ("Qwen4ExpForCausalLM", "Qwen4ExpForConditionalGeneration", "Qwen4ExpMTP")
             and vc.use_v2_model_runner
             and (vc.parallel_config.data_parallel_size > 1 or vc.parallel_config.prefill_context_parallel_size > 1)
         ):
@@ -718,6 +722,12 @@ class AscendConfig:
 
         # profiling_chunk vs min_chunk clamp
         if self.scheduler_config.profiling_chunk_config.enabled:
+            logger.warning_once(
+                "Dynamic chunk size Chunked Pipeline Parallelism (CPP) is deprecated "
+                "as of v0.32.0 and has entered the sunset process. It will be removed "
+                "in a future release. See RFC #21304 (https://github.com/vllm-project/vllm-ascend/issues/21304) "
+                "for details and migration guidance."
+            )
             max_batched = vc.scheduler_config.max_num_batched_tokens
             if max_batched < self.scheduler_config.profiling_chunk_config.min_chunk:
                 logger.warning(

@@ -49,7 +49,7 @@ from vllm_ascend.utils import vllm_version_is
 
 from .attention_dispatch import build_qsa_request_plan, dispatch_qsa_attention
 from .gbsa import GBSA_PAGE_SIZE, qsa_gbsa_attention
-from .lightning_indexer import qsa_select_paged_tokens_lightning
+from .lightning_indexer import qsa_select_paged_tokens_lightning_v2
 
 if vllm_version_is("0.32.0"):
     import vllm.models.qwen4_exp.amd.indexer_qsa as upstream_indexer  # type: ignore[import-not-found]
@@ -429,8 +429,8 @@ class AscendQSAIndexer(upstream_indexer.QSAIndexer):
         metadata: QSAIndexerMetadataProtocol,
         out: torch.Tensor | None,
     ) -> torch.Tensor:
-        logger.info_once("QSA is using the CANN Lightning Indexer v2 backend.")
-        return qsa_select_paged_tokens_lightning(
+        logger.info_once("QSA is using native request-batched CANN LightningIndexerV2.")
+        return qsa_select_paged_tokens_lightning_v2(
             query,
             self.compressed_key_cache.kv_cache,
             metadata.block_table,
@@ -441,6 +441,9 @@ class AscendQSAIndexer(upstream_indexer.QSAIndexer):
             self.token_topk,
             self.compress_ratio,
             out,
+            # Host counts are prepared with this batch's QSA metadata.
+            num_actual_requests=getattr(metadata, "qsa_num_live_requests", None),
+            num_actual_tokens=getattr(metadata, "qsa_num_live_tokens", metadata.num_actual_tokens),
         )
 
 
@@ -737,6 +740,71 @@ qsa_indexer.build_qsa_metadata = qsa_indexer._build_qsa_metadata_torch
 
 class AscendQwen4ExpQSAAttention(upstream_qsa.Qwen4ExpQSAAttention):
     """Qwen4Exp QSA owner bound to the Ascend implementation."""
+
+    def _main_fused_norm_rope_eligible(
+        self,
+        qkv: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> bool:
+        section = getattr(self.rotary_emb, "mrope_section", None)
+        return bool(
+            self.attn_output_gate
+            and qkv.dtype == torch.bfloat16
+            and qkv.ndim == 2
+            and qkv.shape[1] == 2 * self.q_size + 2 * self.kv_size
+            and self.num_heads > 0
+            and self.num_kv_heads > 0
+            and self.head_dim == 256
+            and getattr(self.rotary_emb, "rotary_dim", None) == 64
+            and getattr(self.rotary_emb, "is_neox_style", False)
+            and getattr(self.rotary_emb, "mrope_interleaved", False)
+            and section is not None
+            and list(section) == [11, 11, 10]
+            and positions.ndim in (1, 2)
+            and (positions.ndim == 1 or positions.shape[0] == 3)
+        )
+
+    def _project_qkv_gate(
+        self,
+        qkv: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        # The Ascend fused MRoPE path gathers a temporary rotary-cache tensor.
+        # That temporary is not replay-safe in the MTP FULL graph: after the
+        # graph reuses its memory, the source QKV remains finite while the
+        # fused result can contain NaNs in Q/K. The draft model has only one
+        # QSA layer, so keep the target-model fusion and use the graph-safe
+        # decomposition for MTP.
+        # ForwardContext has no draft-model flag. The layer name is fixed when
+        # the target or MTP model is built and remains stable during graph replay.
+        if self.layer_name.startswith("mtp."):
+            return super()._project_qkv_gate(qkv, positions)
+        if not self._main_fused_norm_rope_eligible(qkv, positions):
+            raise ValueError("QSA main-attention fused norm+RoPE ABI is not satisfied")
+
+        # Preserve valid scheduler positions while mapping padded profiling rows
+        # to a safe cache entry, matching the QSA indexer path above.
+        cache = self.rotary_emb.cos_sin_cache
+        safe_positions = positions.clamp(0, cache.shape[0] - 1).contiguous()
+        cos_sin = cache[safe_positions]
+        if cos_sin.device != qkv.device:
+            cos_sin = cos_sin.to(qkv.device)
+        if cos_sin.dtype != qkv.dtype:
+            cos_sin = cos_sin.to(qkv.dtype)
+        return torch.ops.vllm.triton_split_qkv_rmsnorm_mrope(
+            qkv=qkv,
+            q_weight=1.0 + self.q_norm.weight,
+            k_weight=1.0 + self.k_norm.weight,
+            cos_sin=cos_sin,
+            num_q_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_size=self.head_dim,
+            eps=self.q_norm.variance_epsilon,
+            mrope_section=list(self.rotary_emb.mrope_section),
+            is_interleaved=self.rotary_emb.mrope_interleaved,
+            rope_dim=self.rotary_emb.rotary_dim,
+            has_gate=True,
+        )
 
     def bind_kv_cache(self, kv_cache: QSAKVCache) -> None:
         self.kv_cache = kv_cache

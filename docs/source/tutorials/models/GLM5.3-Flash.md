@@ -576,7 +576,7 @@ address, DP RPC port, TP size, and PCP size to each role script as `$1` through
             export TP_SOCKET_IFNAME=$nic_name
             export HCCL_SOCKET_IFNAME=$nic_name
             export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-            export HCCL_BUFFSIZE=3072
+            export HCCL_BUFFSIZE=2048
             export HCCL_OP_EXPANSION_MODE="AIV"
 
             vllm serve "$MODEL_PATH" \
@@ -618,7 +618,7 @@ address, DP RPC port, TP size, and PCP size to each role script as `$1` through
                 "kv_connector": "MooncakeConnectorV2",
                 "kv_role": "kv_producer",
                 "engine_id": "0",
-                "kv_port": "30100",
+                "kv_port": "30000",
                 "kv_connector_extra_config": {
                   "prefill": {"dp_size": 1, "tp_size": 1, "pcp_size": 8},
                   "decode": {"dp_size": 8, "tp_size": 1, "pcp_size": 1}
@@ -743,10 +743,10 @@ address, DP RPC port, TP size, and PCP size to each role script as `$1` through
     - `--vllm-start-port 8000` assigns Prefill API port `8000` and Decode
       API ports `8000-8007`. Register all eight Decode endpoints with the
       proxy.
-    - Both roles use `--max-model-len 133120`, `--kv-cache-dtype fp8`, and
+    - Both roles use `--max-model-len 1048576`, `--kv-cache-dtype fp8`, and
       `deepseek_mtp` with five speculative tokens.
-    - Prefill sets `--max-num-seqs 256` and
-      `--max-num-batched-tokens 24576`; Decode sets `30` and `120`,
+    - Prefill sets `--max-num-seqs 128` and
+      `--max-num-batched-tokens 32768`; Decode sets `60` and `360`,
       respectively. Tune these per-engine scheduler limits for the workload.
     - Prefill enables shared-expert multistream overlap, with
       `enable_fused_mc2: 0`.
@@ -763,7 +763,7 @@ address, DP RPC port, TP size, and PCP size to each role script as `$1` through
       on Decode, with base KV ports `30100` and `30800`, respectively.
       Both roles declare Prefill TP1/PCP8/DP1 and Decode TP1/PCP1/DP8.
     - `HCCL_IF_IP` and the socket interface variables select each node's
-      communication network. `HCCL_BUFFSIZE` is `3072` on Prefill and
+      communication network. `HCCL_BUFFSIZE` is `2048` on Prefill and
       `1024` on Decode. The DP RPC, API, Mooncake and proxy ports must be
       reachable between the corresponding hosts.
 
@@ -1228,8 +1228,8 @@ address, DP RPC port, TP size, and PCP size to each role script as `$1` through
       --served-model-name glm \
       --safetensors-load-strategy prefetch \
       --max-model-len 1048576 \
-      --max-num-seqs 60 \
-      --max-num-batched-tokens 192 \
+      --max-num-seqs 40 \
+      --max-num-batched-tokens 240 \
       --trust-remote-code \
       --quantization ascend \
       --kv-cache-dtype int8 \
@@ -1771,10 +1771,14 @@ and tenant options, refer to the [KV Cache Pool Deployment Guide](../../user_gui
     - D0: Decode DP ranks 0-3, TP2, API ports `8000-8003`;
     - D1: Decode DP ranks 4-7, TP2, API ports `8000-8003`.
 
-    For backend installation, memory sizing, eviction, and tenant options, refer
-    to the [KV Cache Pool Deployment Guide](../../user_guide/feature_guide/kv_cache_pool_ascend_store.md).
+    In P1's `run_p1.sh` wrapper from Section 5.3, replace
+    `export SERVER_ROLE_ARGS="--headless --data-parallel-start-rank 1"` with
+    `export SERVER_ROLE_ARGS="--api-server-count 1"`. The common `run_p.sh`
+    expands `${SERVER_ROLE_ARGS:-}` into the `vllm serve` command; the launcher
+    supplies P1's DP rank, so do not keep the headless/start-rank flags. This
+    makes both Prefill ranks API-serving. Keep Decode DP settings from Section 5.3.
 
-    ##### Prepare the Mooncake Configuration
+    Configure the pool proxy for both Prefill APIs and all Decode APIs:
 
     The A2 series Docker command in Section 4 already mounts `/etc/hccn.conf`.
     Install the Mooncake backend according to the KV Cache Pool Deployment
@@ -1812,7 +1816,14 @@ and tenant options, refer to the [KV Cache Pool Deployment Guide](../../user_gui
     different per-worker value, keeping each non-zero segment size aligned to
     `1GB`.
 
-    ##### Add the Pool Environment Variables
+    In this topology, each host runs eight model-parallel workers when all
+    configured devices are used: one Prefill rank with PCP8, or four Decode
+    ranks with TP2. Each worker initializes a LocalService, so estimate each
+    host's DRAM contribution as eight times `dram.size`; use the actual worker
+    count if it differs. `world_size` is the maximum supported number of
+    LocalServices, not a DP-rank count. Keep it consistent and large enough
+    across the deployment; changing it after ranks connect requires restarting
+    MetaService.
 
     The generated `pd_pool_engine.sh` sets the common environment for both
     roles. In addition to the standard A2 communication variables, use the
@@ -2048,7 +2059,7 @@ and tenant options, refer to the [KV Cache Pool Deployment Guide](../../user_gui
     Decode `--max-num-seqs 60 --max-num-batched-tokens 192`. The Prefill and
     Decode connector topology must be DP2/TP1/PCP8 and DP8/TP2/PCP1 respectively.
 
-    ##### Start the Services
+    ##### Start and verify the pool
 
     Save the [PCP-aware launcher from Section 5.3](#53-1p1d-pd-disaggregated-deployment)
     as `<DEPLOYMENT_ROOT>/common/launch_online_dp.py`. Run each node's launcher

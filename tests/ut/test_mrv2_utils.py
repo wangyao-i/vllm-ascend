@@ -142,6 +142,13 @@ def test_dflash2_defaults_to_v2_and_honors_environment(monkeypatch, enforce_eage
 @pytest.mark.parametrize(
     "config",
     [
+        SimpleNamespace(
+            speculative_config=SimpleNamespace(
+                method="dflash",
+                enforce_eager=False,
+                draft_model_config=SimpleNamespace(architectures=["DFlash2DraftModel"]),
+            )
+        ),
         SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mm_encoder=True)),
         SimpleNamespace(additional_config={"draft_window_size": 512}),
         SimpleNamespace(speculative_config=SimpleNamespace(method="suffix")),
@@ -152,6 +159,7 @@ def test_dflash2_defaults_to_v2_and_honors_environment(monkeypatch, enforce_eage
         SimpleNamespace(speculative_config=SimpleNamespace(method="eagle", parallel_drafting=True)),
     ],
     ids=[
+        "dflash2-graph",
         "vl-encoder-graph",
         "draft-window-size",
         "suffix-speculative-decoding",

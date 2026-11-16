@@ -309,6 +309,9 @@ class AscendOffloadingConnectorWorker(OffloadingConnectorWorker):
                 else:
                     raise NotImplementedError(f"Unsupported KV cache spec: {type(layer_spec).__name__}")
 
+        # Iterate in the order returned by get_offloading_group_ids (an ordered
+        # tuple, never a set): the transfer handler resolves each group by
+        # position, so ordering must match the scheduler's kv_group_configs.
         group_data_refs: list[list[CanonicalKVCacheRef]] = []
         for group in selected_groups:
             group_refs: list[CanonicalKVCacheRef] = []
