@@ -392,6 +392,7 @@ class Glm5NextVisionTransformer(nn.Module):
         self.patch_size = vision_config.patch_size
         self.spatial_merge_size = vision_config.spatial_merge_size
         self.out_hidden_size = vision_config.out_hidden_size
+        self.input_norm = input_norm if input_norm is not None else IdentityInputNorm()
 
         swiglu_limit = vision_config.swiglu_limit
         if swiglu_limit is None:

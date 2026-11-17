@@ -13,12 +13,40 @@ import tests.ut.distributed.ascend_store._mock_deps  # noqa: F401
 # isort: split
 from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheGroupSpec
 
+from vllm_ascend.core.kv_cache_interface import MambaStateSharding
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend import mooncake_layerwise
+from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.layerwise_keys import LayerwiseKeyBuilder
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.memcache_backend import MemcacheBackend
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.mooncake_backend import MooncakeBackend
 
 
 class TestBoundLayerwiseKeys(unittest.TestCase):
+    def test_declared_state_shards_share_keys_across_pcp_replicas(self):
+        builder = LayerwiseKeyBuilder(
+            lambda group, block_hash, rank, stage: f"{group}@{block_hash}@{rank}@{stage}",
+            pp_size=2,
+            pcp_size=4,
+        )
+        for shard_count in (1, 2, 4):
+            with self.subTest(shard_count=shard_count):
+                declaration = MambaStateSharding(shard_rank=0, shard_count=shard_count)
+                expected = builder.make_hit_check_keys(1, "hash", 8, sharding=declaration)
+                self.assertEqual(len(expected), builder.pp_size * shard_count)
+                for replica_rank in range(builder.pcp_size):
+                    writers = [
+                        builder.make_full_key(
+                            1,
+                            "hash",
+                            shard_rank,
+                            stage,
+                            replica_rank,
+                            sharding=MambaStateSharding(shard_rank=shard_rank, shard_count=shard_count),
+                        )
+                        for stage in range(builder.pp_size)
+                        for shard_rank in range(shard_count)
+                    ]
+                    self.assertEqual(writers, expected)
+
     def test_pcp_keys_cover_all_workers_and_isolate_topologies(self):
         for pp_size in (1, 2):
             for num_groups in (1, 2):
