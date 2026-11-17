@@ -26,7 +26,7 @@ import torch_npu
 from vllm.triton_utils import HAS_TRITON
 
 from vllm_ascend.device import utils as device_utils
-from vllm_ascend.device.delivered_op import delivered_op_or_none
+from vllm_ascend.device.delivered_op import delivered_op
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 from vllm_ascend.device.paged_mla_cache_read import try_load_strided_mla_cache
 from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
@@ -695,6 +695,14 @@ class BaseDeviceAdaptor:
         torch.ops._C_ascend.npu_scatter_nd_update_sk(indexer_scale_cache, slot_mapping, kv_scale_dummy)
 
     # ===== Lightning Indexer Dtype Prep =====
+
+    @staticmethod
+    def get_dsa_lightning_indexer_op():
+        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2
+
+    @staticmethod
+    def get_dsa_lightning_indexer_metadata_op(**kwargs):
+        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(**kwargs)
 
     @staticmethod
     def get_dsa_indexer_quant_mode() -> int:
@@ -2036,31 +2044,17 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     def dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping):
         return A5DeviceAdaptor.dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping)
 
-    # --- lightning indexer op selection: delivered V2 (A6 fp8 kernel), in-tree fallback ---
-
-    @staticmethod
-    def _delivered_lightning_indexer_op(name):
-        # 9.2: npu_ops_transformer::npu_quant_lightning_indexer
-        # 9.3: cann_ops_transformer::quant_lightning_indexer
-        return delivered_op_or_none(name[4:] if name.startswith("npu_") else name)
+    # The A6 FP8 indexer requires the delivered kernel and metadata contract.
 
     @staticmethod
     def get_dsa_lightning_indexer_op():
-        # A6 的 fp8 量化口径需要 ascend960dt 的 fp8 内核，只有交付包
-        # npu_quant_lightning_indexer 提供；in-tree v2 在 A6 上只编了 INT8(arch22)。
-        delivered = A6DeviceAdaptor._delivered_lightning_indexer_op("npu_quant_lightning_indexer")
-        if delivered is not None:
-            return delivered
-        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2
+        return delivered_op("quant_lightning_indexer")
 
     @staticmethod
     def get_dsa_lightning_indexer_metadata_op(**kwargs):
-        # 交付包的 metadata 算子没有 in-tree 的 `device` 关键字，调用前摘掉。
-        delivered = A6DeviceAdaptor._delivered_lightning_indexer_op("npu_quant_lightning_indexer_metadata")
-        if delivered is not None:
-            kwargs.pop("device", None)
-            return delivered(**kwargs)
-        return torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(**kwargs)
+        # The delivered metadata interface does not accept the in-tree device argument.
+        kwargs.pop("device", None)
+        return delivered_op("quant_lightning_indexer_metadata")(**kwargs)
 
     @staticmethod
     def indexer_select_post_process(
@@ -2124,18 +2118,6 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
         query_scale = q_li_scale.view(q_li_shape_ori[:-1])
         cu_seqlens_q = F.pad(actual_seq_lengths_query, (1, 0), value=0)
         seqused_k = actual_seq_lengths_key
-
-        if _os.environ.get("A6_QLI_DBG") == "1":
-            import sys as _s
-
-            print(
-                f"[A6QLI] q={tuple(query.shape)} {query.dtype} k={tuple(key.shape)} {key.dtype} "
-                f"qs={tuple(query_scale.shape)} {query_scale.dtype} "
-                f"ks={tuple(key_scale.shape)} {key_scale.dtype} w={tuple(weights.shape)} "
-                f"seqused_k={tuple(seqused_k.shape)} bt={tuple(attn_metadata.block_table.shape)}",
-                file=_s.stderr,
-                flush=True,
-            )
 
         metadata = A6DeviceAdaptor.get_dsa_lightning_indexer_metadata_op(
             num_heads_q=query.shape[1],

@@ -29,6 +29,10 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.ATB_WARMUP,
         HardwareCapability.BGMV_SGMV_META_REGISTRATION,
         HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
@@ -102,6 +106,10 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
             HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
             HardwareCapability.FLA_GDN_PREFILL,
+            HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+            HardwareCapability.GEMMA_RMS_NORM_OP,
+            HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+            HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
             HardwareCapability.FP8_ATTENTION,
             HardwareCapability.POOL_KEY_INDEXER_FP8,
             HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
@@ -128,6 +136,19 @@ _EXPECTED_CAPABILITIES = {
         }
     ),
 }
+
+_EXPECTED_CAPABILITIES[AscendDeviceType.A6] = (
+    _EXPECTED_CAPABILITIES[AscendDeviceType.A5]
+    - {
+        HardwareCapability.NPU_TOP_K_TOP_P,
+        HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
+    }
+) | {HardwareCapability.DSV4_DELIVERED_COMPRESSOR, HardwareCapability.DSV4_DELIVERED_MHC}
 
 
 @pytest.mark.parametrize(
@@ -187,6 +208,17 @@ _EXPECTED_CAPABILITIES = {
             MoECommPolicy.CAPACITY_AND_WORLD_SIZE,
             QuantizationBackendFamily.STANDARD,
         ),
+        (
+            AscendDeviceType.A6,
+            AttentionBackendFamily.STANDARD,
+            CPUBindingMode.TOPO_AFFINITY,
+            "vllm_ascend.worker.worker.NPUWorker",
+            DeviceAdaptorFamily.A6,
+            DeviceAddressingMode.DIRECT,
+            WeightLayoutPolicy.CONFIGURABLE,
+            MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,
+            QuantizationBackendFamily.STANDARD,
+        ),
     ],
 )
 def test_hardware_profile_implementation_matrix(
@@ -229,6 +261,7 @@ def test_hardware_profile_capability_matrix(device_type: AscendDeviceType) -> No
         (AscendDeviceType.A2, 9),
         (AscendDeviceType.A3, None),
         (AscendDeviceType.A5, None),
+        (AscendDeviceType.A6, None),
         (AscendDeviceType._310P, None),
     ],
 )
@@ -243,6 +276,7 @@ def test_gdn_fixed_spec_recurrent_fallback_policy(device_type, expected_min_quer
         (AscendDeviceType.A2, 0),
         (AscendDeviceType.A3, 0),
         (AscendDeviceType.A5, 1),
+        (AscendDeviceType.A6, 0),
         (AscendDeviceType._310P, 0),
     ],
 )

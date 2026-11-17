@@ -91,9 +91,6 @@ def _load_delivered_compressor():
     return _COMPRESSOR_FN
 
 
-_SYNCED_FIRST_CALL: set[str] = set()
-
-
 def _delivered_op(name: str):
     cached = _OP_CACHE.get(name)
     if cached is not None:
@@ -164,40 +161,6 @@ def _resolve_delivered_op(name: str):
                 return fn
         tried.append(f"{pkg}: no {name}")
     raise RuntimeError(f"delivered op {name!r} not found: {'; '.join(tried)}")
-
-
-def _sync_first_call(op_key: str) -> None:
-    """Synchronize once per op so asynchronously-reported aclnn failures surface at the call.
-
-    Skipped -- and deliberately NOT marked as done -- while a stream is being captured: an aclnn
-    op may not synchronize one (runtime 107027 "Not allow to synchronize captured-stream", the very
-    failure ``dsv4_compressor_metadata`` was rewritten to avoid). The
-    first call outside a capture then pays the sync, so attribution survives either ordering.
-    """
-    if op_key in _SYNCED_FIRST_CALL or _stream_is_capturing():
-        return
-    _SYNCED_FIRST_CALL.add(op_key)
-    sync = getattr(torch_npu.npu, "synchronize", None)
-    if sync is not None:
-        sync()
-
-
-def _stream_is_capturing() -> bool:
-    """Whether the current NPU stream is being captured (ACLGraph).
-
-    ``torch.compiler.is_compiling()`` cannot answer this: it tracks Dynamo / ``torch.compile``
-    only and returns False throughout ``torch.npu.graph`` capture. The PTA API
-    is the one the fork already uses in ``worker/v2/aclgraph_utils.py``. Probed per call rather
-    than bound at import: it is consulted once per op per process, and a torch_npu build without
-    ``torch_npu`` may not carry it at all.
-    """
-    probe = getattr(torch_npu.npu, "is_current_stream_capturing", None)
-    if probe is None:
-        return False
-    try:
-        return bool(probe())
-    except Exception:  # noqa: BLE001 - never let this probe break an op call
-        return False
 
 
 def rms_norm_gamma(weight: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -350,9 +313,9 @@ def _delivered_compressor(
     # it. The in-tree ``_C_ascend.compressor`` folds RMSNorm and RoPE into the op (19
     # arguments) and needs a vendor bundle that would shadow the built-in A6 kernel, so it
     # must not be used here.
-    # Validate before the call, not after: ``fn`` writes ``state_cache`` in place and the
-    # first call also synchronizes, so a late rejection would leave a half-applied step and
-    # surface a lazy state-cache shape guard instead of this message.
+    # Validate before calling ``fn``, which writes ``state_cache`` in place.
+    # A late rejection would leave a half-applied step and surface a lazy
+    # state-cache shape guard instead of this message.
     if rotary_mode not in (0, 2):
         raise RuntimeError(
             f"compressor: rotary_mode={rotary_mode} is not supported by the delivered path "
@@ -373,10 +336,6 @@ def _delivered_compressor(
         coff=coff,
         cache_mode=cache_mode,
     )
-    # One synchronize after the first call, like the two cache-writing ops: aclnn failures can
-    # be reported only at the next sync, so without this the worker dies with the engine's error
-    # long after the call that caused it.
-    _sync_first_call("compressor")
     out = _compressor_norm_and_rope(
         out,
         norm_weight,
@@ -415,7 +374,9 @@ def _compressor_op(
     """
     import os
 
-    if os.environ.get("A6_IN_TREE_COMPRESSOR") == "1":
+    if not get_current_hardware_profile().supports(HardwareCapability.DSV4_DELIVERED_COMPRESSOR) or (
+        os.environ.get("A6_IN_TREE_COMPRESSOR") == "1"
+    ):
         return torch.ops._C_ascend.compressor(
             x,
             wkv_weight,
@@ -626,6 +587,7 @@ class Compressor(nn.Module):
         return compressed_kv, slot_mapping
 
 
-# 预热：捕获区里不允许 import / 加载 .so。交付包缺失时回退 torch.ops。
-with contextlib.suppress(Exception):
-    _load_delivered_compressor()
+# Resolve the A6 extension before capture. Operator lookup reports missing packages at use.
+if get_current_hardware_profile().supports(HardwareCapability.DSV4_DELIVERED_COMPRESSOR):
+    with contextlib.suppress(Exception):
+        _load_delivered_compressor()
