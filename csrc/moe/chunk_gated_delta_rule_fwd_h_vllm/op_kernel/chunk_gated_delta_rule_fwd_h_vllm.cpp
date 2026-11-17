@@ -15,7 +15,8 @@
 #if defined(__CCE_AICORE__) && (__CCE_AICORE__ == 200)
 #include "arch20/compat_310p.h"
 #include "arch20/gemm/kernel/gdn_fwd_h_kernel.hpp"
-#elif defined(__CCE_AICORE__) && (__CCE_AICORE__ == 310)
+#elif (defined(__CCE_AICORE__) && (__CCE_AICORE__ == 310)) || \
+      (defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201))
 #include "arch35/gemm/kernel/gdn_fwd_h_kernel.hpp"
 #else
 #include "arch22/gemm/kernel/gdn_fwd_h_kernel.hpp"
@@ -216,11 +217,21 @@ extern "C" __global__ __aicore__ void chunk_gated_delta_rule_fwd_h_vllm(GM_ADDR 
     GM_ADDR user = AscendC::GetUserWorkspace(workspace);
 
     if (TILING_KEY_IS(1)) {
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
+        // A6 (Ascend960DT): Cube:Vector is 1:1. Using 1:2 here makes the
+        // AIC wait forever for an AIV that was never launched -> 507014.
+        KERNEL_TASK_TYPE(1, KERNEL_TYPE_MIX_AIC_1_1);
+#else
         KERNEL_TASK_TYPE(1, KERNEL_TYPE_MIX_AIC_1_2);
+#endif
         GDN::ChunkGatedDeltaRuleFwdHVllmDispatch<Catlass::Gemm::Kernel::GDNFwdHTileShapes128>(
             k, w, u, g, gk, inital_state, cu_seqlens, chunk_indices, h, v_new, final_state, tiling, user);
     } else if (TILING_KEY_IS(2)) {
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
+        KERNEL_TASK_TYPE(2, KERNEL_TYPE_MIX_AIC_1_1);
+#else
         KERNEL_TASK_TYPE(2, KERNEL_TYPE_MIX_AIC_1_2);
+#endif
         GDN::ChunkGatedDeltaRuleFwdHVllmDispatch<Catlass::Gemm::Kernel::GDNFwdHTileShapes256>(
             k, w, u, g, gk, inital_state, cu_seqlens, chunk_indices, h, v_new, final_state, tiling, user);
     }

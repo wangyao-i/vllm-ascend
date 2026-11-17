@@ -59,6 +59,8 @@ public:
         this->Attr("clamp_value").AttrType(OPTIONAL).Float(0.0f);
 
         this->AICore().AddConfig("ascend950");
+        this->AICore().AddConfig("ascend960dt");
+        this->AICore().AddConfig("ascend960pr");
     }
 
 };

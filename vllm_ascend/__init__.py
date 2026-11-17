@@ -62,6 +62,12 @@ def _ensure_global_patch():
     global _GLOBAL_PATCH_APPLIED
     if _GLOBAL_PATCH_APPLIED:
         return
+    # CANN 9.3.0 on Ascend960 replaces acl.media/acl.himpi with placeholder
+    # modules whose __getattr__ raises RuntimeError even for dunders, which
+    # breaks hasattr() based module scans (torch_npu._inductor import).
+    from vllm_ascend.patch.platform.patch_acl_dvpp_shim import apply as _apply_acl_dvpp_shim
+
+    _apply_acl_dvpp_shim()
 
     from vllm_ascend.mrv2_utils import apply_v2_model_runner_config_patch
     from vllm_ascend.utils import adapt_patch

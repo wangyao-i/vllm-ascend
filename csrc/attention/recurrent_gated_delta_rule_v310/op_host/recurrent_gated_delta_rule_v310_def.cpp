@@ -88,6 +88,8 @@ public:
             .NeedCheckSupportFlag(false)
             .ExtendCfgInfo("softsync.flag", "true");
         this->AICore().AddConfig("ascend310p", config310p);
+        this->AICore().AddConfig("ascend960dt", config310p);
+        this->AICore().AddConfig("ascend960pr", config310p);
     }
 };
 

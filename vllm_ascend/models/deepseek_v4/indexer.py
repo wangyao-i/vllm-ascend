@@ -244,7 +244,24 @@ class AscendIndexerOps:
         metadata: typing.Any,
     ) -> torch.Tensor:
         wait_for_device_metadata(DeviceMetadataStage.INDEXER, id(metadata.qli_metadata))
-        topk_idxs, _ = torch.ops._C_ascend.npu_quant_lightning_indexer_v2(
+        import os as _os
+
+        if _os.environ.get("QLIDBG") == "1" and not getattr(self, "_qlidbg_done", False):
+            self._qlidbg_done = True
+            import sys as _s
+
+            print(
+                f"[QLIDBG] q={tuple(query.shape)} {query.dtype} k={tuple(key_cache.shape)} {key_cache.dtype} "
+                f"w={tuple(weights.shape)} qs={tuple(query_scale.shape)} {query_scale.dtype} "
+                f"ks={tuple(scale_cache.shape)} {scale_cache.dtype} topk={self.index_topk} "
+                f"qm={self.device_operator.get_dsa_indexer_quant_mode()} "
+                f"md={tuple(metadata.qli_metadata.shape)} "
+                f"seqused_k={tuple(metadata.qli_seqused_k.shape)} {metadata.qli_seqused_k.tolist()[:4]} "
+                f"bt={tuple(metadata.block_table.shape)}",
+                file=_s.stderr,
+                flush=True,
+            )
+        topk_idxs, _ = self.device_operator.get_dsa_lightning_indexer_op()(
             query=query,
             key=key_cache,
             weights=self.device_operator.prepare_dsa_indexer_weights(weights),
@@ -276,6 +293,12 @@ class AscendIndexerOps:
         slot_mapping: torch.Tensor,
         metadata: typing.Any,
     ) -> torch.Tensor:
+        import os as _os
+        import sys as _s
+
+        _dbg = _os.environ.get("QLIDBG") == "1"
+        if _dbg:
+            print("[DBG] S1 scatter+quant start", file=_s.stderr, flush=True)
         query, query_scale, _, _ = self.device_operator.indexer_quant_scatter(
             query,
             key,
@@ -284,7 +307,9 @@ class AscendIndexerOps:
             full_cache,
             slot_mapping,
         )
-        return self.select_topk(
+        if _dbg:
+            print("[DBG] S2 scatter done, topk start", file=_s.stderr, flush=True)
+        _r = self.select_topk(
             query,
             weights,
             query_scale,
@@ -292,6 +317,9 @@ class AscendIndexerOps:
             scale_cache,
             metadata,
         )
+        if _dbg:
+            print("[DBG] S3 topk done", file=_s.stderr, flush=True)
+        return _r
 
 
 class DeepseekV4Indexer(nn.Module):

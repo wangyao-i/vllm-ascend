@@ -115,7 +115,7 @@ def get_chip_type() -> str:
                 # A3 case
                 assert npu_name
                 return (chip_name + "_" + npu_name).lower()
-        elif "950" in chip_name:
+        elif "950" in chip_name or "960" in chip_name:
             assert npu_name
             return (chip_name + "_" + npu_name).lower()
         elif "a2g3" in chip_name.lower():
@@ -124,7 +124,8 @@ def get_chip_type() -> str:
         else:
             raise ValueError(f"Unable to recognize chip name: {chip_name}, please manually set env SOC_VERSION")
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Get chip info failed: {e}")
+        logging.warning(f"npu-smi query failed:%s; set SOC_VERSION override.", e)
+        return ""
     except FileNotFoundError:
         logging.warning(
             "npu-smi command not found, if this is an npu envir, please check if npu driver is installed correctly."

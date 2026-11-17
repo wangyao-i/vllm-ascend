@@ -24,6 +24,7 @@
 #include "register/op_def_registry.h"
 #include "../op_kernel/kv_quant_sparse_flash_attention_vllm_template_tiling_key.h"
 #include "kv_quant_sparse_flash_attention_vllm_tiling.h"
+#include "../../../common/op_log_compat.h"
 
 using std::map;
 using std::string;
@@ -1662,7 +1663,8 @@ ge::graphStatus QSFAInfoParser::GetNpuInfo()
 
     npuArch_ = qsfaAscendcPlat.GetCurNpuArch();
     isA5_ = (npuArch_ == NpuArch::DAV_3510);
-    if (npuArch_ != NpuArch::DAV_2201 && npuArch_ != NpuArch::DAV_3510) {
+    // A6-ASC-FUSION: A6 is NpuArch::DAV_9201, original whitelist only had 2201/3510.
+    if (npuArch_ != NpuArch::DAV_2201 && npuArch_ != NpuArch::DAV_3510 && npuArch_ != NpuArch::DAV_9201) {
         OPS_REPORT_VECTOR_INNER_ERR(opName_, "Npu Arch Version[%d] is not support.", static_cast<int32_t>(npuArch_));
         return GRAPH_FAILED;
     }

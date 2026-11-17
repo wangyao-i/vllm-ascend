@@ -45,6 +45,8 @@ public:
         this->Attr("layout").AttrType(OPTIONAL).Int(2);
         this->Attr("block_stride").AttrType(OPTIONAL).Int(0);
         this->AICore().AddConfig("ascend950");
+        this->AICore().AddConfig("ascend960dt");
+        this->AICore().AddConfig("ascend960pr");
     }
 };
 

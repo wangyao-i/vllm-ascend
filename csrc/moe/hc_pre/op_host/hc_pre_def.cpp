@@ -81,6 +81,8 @@ public:
             .DynamicShapeSupportFlag(true)
             .ExtendCfgInfo("opFile.value", "hc_pre");
         this->AICore().AddConfig("ascend950", regbaseCfg);
+        this->AICore().AddConfig("ascend960dt", regbaseCfg);
+        this->AICore().AddConfig("ascend960pr", regbaseCfg);
     }
 };
 OP_ADD(HcPre);
