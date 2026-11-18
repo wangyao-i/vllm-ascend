@@ -116,13 +116,35 @@ establish coverage of the convolution, recurrent and complete prefill paths
 required by Qwen. Record the installed wheel, module path, kernel set and build
 identity before choosing the backend. PR1134 is a separate candidate revision.
 
+## Adaptation order by model and operator provider
+
+Use the A5 model and cache contracts as the baseline. Select an implementation
+in the device adaptor or existing cache plan. A6 CANN binaries, Python bindings
+and custom kernels can be qualified independently behind those contracts.
+`torch_npu` is the Python PTA interface. `aclnn` is a C operator interface and can
+also be used by FLA and `_C_ascend` wrappers. Check the loaded library and target
+kernel to identify which implementation executes.
+
+| Provider | Active path and adaptation order |
+| --- | --- |
+| `fla_npu` | Qwen convolution and recurrent GDN are first priority. Preserve Python signatures, state layout, accepted-token semantics and BF16/MTP coverage. Use PR1134 as a recurrent candidate and qualify causal convolution separately. Treat package fused prefill as a later backend choice. |
+| Triton Ascend | Qwen chunk prefill uses L2Norm, cumsum, scaled KKT, triangular solve and W/U preparation. Qualify these alongside the AscendC consumers using the actual compiler. Check launch geometry and numerical parity per stage. Investigate fused MRoPE separately from the working decomposed path. |
+| `_C_ascend` | Qualify Qwen FwdH and FwdO together. For DSv4, prioritize matching FP8 QLI compute/metadata and its cache writers, then restore fused compressor and mHC pre contracts. Qualify legacy SFA/QSFA according to the selected model and cache plan. Port GMM-SiTU when the selected quantization invokes it. |
+| PTA and delivered CANN packages | Validate the A5-compatible math and layout for each called quantization, matmul, scatter and norm interface on the target stack. Keep delivered QLI, DSv4 KV epilog/attention and compressor/mHC alternatives behind their existing boundaries until replacements pass parity. Track installed package, operator schema, resolved library and SoC binary together. |
+
+DSv4 attention KV and indexer KV are separate. The FP8 attention-KV plan selects
+delivered `kv_compress_epilog` and mixed-quant sparse MLA with matching metadata.
+The FP8 indexer uses QLI compute/metadata, its own cache writer and scale layout.
+The BF16 attention-KV plan uses sparse flash MLA with its metadata and a PTA
+scatter. Preserve each producer/consumer pair and verify cache bytes, padding,
+slot mapping and replay before changing either path. Restore the A5 QLI 36/72
+metadata contract or qualify a complete versioned producer/consumer migration
+before sharing a new layout across device families.
+
 ## Validation and handoff
 
-Local CPU source-body tests cover all five profile capability sets, native and
-delivered dispatch, mHC shape/epsilon adaptation, compressor argument forwarding,
-missing delivered QLI behavior, and independence of native GDN from FLA.
-Operator leaves are mocked. Native imports, CANN compilation and model execution
-require the target NPU environment.
+The existing hardware-profile matrix tracks declared capabilities. Native imports,
+CANN compilation and model execution require the target NPU environment.
 
 For each native check, record SoC, actual AIC/AIV counts, driver, CANN, torch,
 torch_npu, Triton, FLA and delivered package versions, commit and build hashes.
