@@ -2044,7 +2044,10 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     def dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping):
         return A5DeviceAdaptor.dsa_indexer_scatter_scale_part3(kv_scale, indexer_scale_cache, slot_mapping)
 
-    # The A6 FP8 indexer requires the delivered kernel and metadata contract.
+    # A6 prepares FP8 inputs, while the in-tree A6 indexer selects an INT8
+    # kernel. Require the paired delivered compute/metadata implementation.
+    # The shared resolver handles package namespaces and npu_ aliases. A missing
+    # delivered op raises at lookup before incompatible tensors reach a kernel.
 
     @staticmethod
     def get_dsa_lightning_indexer_op():

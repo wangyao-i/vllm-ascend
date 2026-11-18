@@ -26,14 +26,16 @@ still needs its model, shape, dtype and runtime preconditions.
 | Compressor and mHC | Scope delivered implementations to A6 capabilities and restore the community calls for other profiles | Native regression coverage and A6 model parity |
 | Qwen normalization and MRoPE | Enable the existing fused capabilities on A2/A3/A5, retain A6 exclusions | Fused-path regression coverage |
 | GDN prefill | Give the native PTA probe its own capability, independent of external FLA availability | Native and FLA backends qualified separately |
-| Diagnostics | Remove QLI tensor-to-host debug prints and compressor first-call synchronization | Graph capture, replay and model performance |
+| Diagnostics | Remove QLI tensor-to-host debug prints. Retain compressor first-call synchronization with its capture guard | Graph capture, replay and model performance |
 | A5 build | Restore shared-KV attention and metadata entries accidentally disabled with A6 TODO comments | A5 custom-op build |
 | K2q CSR | Add DT/PR registration to histogram, row-prefix, tile-prefix and scatter stages | Full five-stage pipeline and boundary cases |
 | AddRmsNormBias | Select regbase tiling for DAV_9201/DAV_9202 to match the selected apt kernel | Target CANN build, tiling keys, dtype and output parity |
 | GDN FwdH | Select the existing `Ascend960DT` architecture tag for 9201 in the kernel and two epilogue policies | Workspace, scheduling and cross-core flags |
 | Operator definitions | Remove duplicate DT/PR registrations in FwdH, FwdO and AttnRes | Target CANN build |
 
-The A6 AddRmsNormBias and fused GDN paths remain disabled during qualification.
+The A6 AddRmsNormBias and monolithic PTA GDN prefill paths remain disabled during qualification.
+The selected chunk pipeline combines Triton preparation with the in-tree AscendC
+FwdH/FwdO operators, so FwdH architecture changes affect the active prefill path.
 The FwdH tag correction addresses one source inconsistency. A complete port must
 also establish controller and synchronization correctness. PR/9202 FwdH support
 requires a separately supported architecture policy.
@@ -46,7 +48,7 @@ requires a separately supported architecture policy.
 | Compressor delivered kernel plus Python RMSNorm/RoPE | In-tree launch reportedly hangs at synchronization, and the A6 build excludes this operator. The delivered output ends before norm/RoPE | Implement the fused community output and cache contract, including dtype, rotary mode and continuous state updates |
 | Delivered mHC pre | In-tree pre reportedly fails to return on the bring-up stack | Qualify in-tree pre output order, epsilon order, sinkhorn, shapes and precision |
 | PTA mHC post | Existing A6 validation reportedly used this pairing with delivered pre. The branch also reports that in-tree post can return | Compare both post implementations with the same pre outputs, then restore independently if equivalent |
-| GDN Triton prefill | Existing comments report native fused timeouts | Qualify chunk boundaries, final state, variable lengths, padding and repeated graph replay |
+| GDN chunk prefill | Existing comments report monolithic PTA fused timeouts. The fallback uses Triton and AscendC FwdH/FwdO | Qualify chunk boundaries, final state, variable lengths, padding and repeated graph replay |
 | Gemma RMSNorm and add-RMSNorm-bias decomposition | Gemma target binary availability is unresolved, and custom add-RMSNorm-bias had inconsistent tiling dispatch | Verify loaded symbols, target binaries and custom-op results on the pinned stack |
 | Split RMSNorm/MRoPE | Existing comments report a vector-core exception in fused Triton MRoPE | Reproduce and fix the fused kernel with 1D/3D positions, supported dtypes and graph modes |
 | TopKTopP fallback | Existing stack reportedly lacks the required target binary | Verify the exact PTA API, sampling semantics and target binary |
@@ -60,6 +62,9 @@ the flattened residual matrix to `[T,n,n]`. The native path retains its original
 
 The compressor wrapper retains its output dtype and cache-update behavior.
 Moving its RMSNorm/RoPE work into an operator must preserve those contracts.
+It also retains the existing first-call synchronization to attribute asynchronous
+kernel failures. Capture defers that synchronization until the first call outside
+capture. Changes to this diagnostic behavior require target-stack evidence.
 Existing `A6_IN_TREE_COMPRESSOR` and `A6_IN_TREE_INDEXER` diagnostic switches
 remain available for controlled comparison. Their centralization and lifecycle
 need cleanup before an upstream submission.
@@ -129,9 +134,7 @@ requests, GDN chunk boundaries, prefill/decode, continuous cache updates, eager
 and repeated graph replay. Measure performance separately with identical
 workloads. Multi-card TP/EP coverage must match the intended deployment.
 
-A new PR needs a release-note fragment with its assigned PR number. This local
-branch has no assigned PR number. Suggested bugfix text is “Restored community
-operator dispatch on A2/A3/A5 while isolating A6 delivered-kernel adaptations.”
+The release-note fragment for this change is `release_notes/fragments/55.yaml`.
 
 ## Pinned reference sources
 

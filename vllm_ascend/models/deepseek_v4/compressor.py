@@ -91,6 +91,9 @@ def _load_delivered_compressor():
     return _COMPRESSOR_FN
 
 
+_SYNCED_FIRST_CALL: set[str] = set()
+
+
 def _delivered_op(name: str):
     cached = _OP_CACHE.get(name)
     if cached is not None:
@@ -161,6 +164,40 @@ def _resolve_delivered_op(name: str):
                 return fn
         tried.append(f"{pkg}: no {name}")
     raise RuntimeError(f"delivered op {name!r} not found: {'; '.join(tried)}")
+
+
+def _sync_first_call(op_key: str) -> None:
+    """Synchronize once per op so asynchronously-reported aclnn failures surface at the call.
+
+    Skipped -- and deliberately NOT marked as done -- while a stream is being captured: an aclnn
+    op may not synchronize one (runtime 107027 "Not allow to synchronize captured-stream", the very
+    failure ``dsv4_compressor_metadata`` was rewritten to avoid). The
+    first call outside a capture then pays the sync, so attribution survives either ordering.
+    """
+    if op_key in _SYNCED_FIRST_CALL or _stream_is_capturing():
+        return
+    _SYNCED_FIRST_CALL.add(op_key)
+    sync = getattr(torch_npu.npu, "synchronize", None)
+    if sync is not None:
+        sync()
+
+
+def _stream_is_capturing() -> bool:
+    """Whether the current NPU stream is being captured (ACLGraph).
+
+    ``torch.compiler.is_compiling()`` cannot answer this: it tracks Dynamo / ``torch.compile``
+    only and returns False throughout ``torch.npu.graph`` capture. The PTA API
+    is the one the fork already uses in ``worker/v2/aclgraph_utils.py``. Probed per call rather
+    than bound at import: it is consulted once per op per process, and a torch_npu build without
+    ``torch_npu`` may not carry it at all.
+    """
+    probe = getattr(torch_npu.npu, "is_current_stream_capturing", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001 - never let this probe break an op call
+        return False
 
 
 def rms_norm_gamma(weight: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -336,6 +373,10 @@ def _delivered_compressor(
         coff=coff,
         cache_mode=cache_mode,
     )
+    # One synchronize after the first call, like the two cache-writing ops: aclnn failures can
+    # be reported only at the next sync, so without this the worker dies with the engine's error
+    # long after the call that caused it.
+    _sync_first_call("compressor")
     out = _compressor_norm_and_rope(
         out,
         norm_weight,
