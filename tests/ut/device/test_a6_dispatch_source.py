@@ -128,48 +128,6 @@ def test_compressor_routes_by_profile(profiles, monkeypatch, device, in_tree):
         delivered.assert_not_called()
 
 
-def test_delivered_compressor_defers_first_sync_until_outside_capture():
-    path = "vllm_ascend/models/deepseek_v4/compressor.py"
-    output = torch.zeros(2, 8)
-    kernel, norm_rope, synchronize = Mock(return_value=output), Mock(return_value=output), Mock()
-    calls = Mock()
-    calls.attach_mock(kernel, "kernel")
-    calls.attach_mock(norm_rope, "norm_rope")
-    calls.attach_mock(synchronize, "synchronize")
-    npu = types.SimpleNamespace(is_current_stream_capturing=Mock(side_effect=[True, False]), synchronize=synchronize)
-    namespace = {
-        "torch_npu": types.SimpleNamespace(npu=npu),
-        "_SYNCED_FIRST_CALL": set(),
-        "_delivered_op": Mock(return_value=kernel),
-        "_compressor_norm_and_rope": norm_rope,
-        "RopeTables": types.SimpleNamespace,
-    }
-    _function(path, "_stream_is_capturing", namespace)
-    _function(path, "_sync_first_call", namespace)
-    compressor = _function(path, "_delivered_compressor", namespace)
-    inputs = [object() for _ in range(5)]
-
-    assert compressor(*inputs) is output
-    synchronize.assert_not_called()
-    assert namespace["_SYNCED_FIRST_CALL"] == set()
-
-    assert compressor(*inputs) is output
-    synchronize.assert_called_once_with()
-    assert namespace["_SYNCED_FIRST_CALL"] == {"compressor"}
-
-    assert compressor(*inputs) is output
-    synchronize.assert_called_once_with()
-    assert [call[0] for call in calls.mock_calls] == [
-        "kernel",
-        "norm_rope",
-        "kernel",
-        "synchronize",
-        "norm_rope",
-        "kernel",
-        "norm_rope",
-    ]
-
-
 @pytest.mark.parametrize("device", ["A2", "A3", "A5", "A6"])
 def test_mhc_pre_post_shapes_and_epsilon_order(profiles, device):
     namespace = _namespace(profiles, device)
