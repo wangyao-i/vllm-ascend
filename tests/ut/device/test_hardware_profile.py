@@ -29,6 +29,10 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.ATB_WARMUP,
         HardwareCapability.BGMV_SGMV_META_REGISTRATION,
         HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
@@ -102,6 +106,10 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
             HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
             HardwareCapability.FLA_GDN_PREFILL,
+            HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+            HardwareCapability.GEMMA_RMS_NORM_OP,
+            HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+            HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
             HardwareCapability.FP8_ATTENTION,
             HardwareCapability.POOL_KEY_INDEXER_FP8,
             HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
@@ -128,6 +136,19 @@ _EXPECTED_CAPABILITIES = {
         }
     ),
 }
+
+_EXPECTED_CAPABILITIES[AscendDeviceType.A6] = (
+    _EXPECTED_CAPABILITIES[AscendDeviceType.A5]
+    - {
+        HardwareCapability.NPU_TOP_K_TOP_P,
+        HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
+    }
+) | {HardwareCapability.DSV4_DELIVERED_COMPRESSOR, HardwareCapability.DSV4_DELIVERED_MHC}
 
 
 @pytest.mark.parametrize(
