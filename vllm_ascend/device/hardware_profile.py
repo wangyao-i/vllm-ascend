@@ -363,6 +363,9 @@ _A5_CAPABILITIES = frozenset(
 # A6-ADAPT: no compiled extension on A6
 _A6_UNSUPPORTED_CAPABILITIES = frozenset(
     {
+        # Use generic cache writes without changing tensor views or dtypes.
+        HardwareCapability.SCATTER_ND_CACHE_STORE,
+        HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
         HardwareCapability.FLA_GDN_PREFILL,
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
