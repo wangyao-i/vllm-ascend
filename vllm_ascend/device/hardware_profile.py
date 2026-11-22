@@ -131,6 +131,7 @@ class HardwareCapability(Enum):
     IRQ_CPU_RESERVATION = auto()
     # Create the local communication resource used by supported KV-transfer deployments.
     LOCAL_KV_COMM_RESOURCE = auto()
+    DISABLE_OP_EARLY_START = auto()
     # Use vLLM-Ascend's custom BGMV/SGMV LoRA kernels when rank constraints also pass.
     LORA_CUSTOM_OPS = auto()
     # Use the token-fused MLA cache protocol for eligible FlashMLA models.
@@ -376,6 +377,9 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # (AclOpKernelInit failed) on A6's CANN 9.2.0. The in-place V1 variant
         # works; only the out-of-place V2 form is missing.
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        # The current A6 CANN MatMul+ReduceScatter kernel rejects the fusion pass's
+        # AIV communication mode. Sequence parallelism can use the unfused ops.
+        HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         # A6-ADAPT: no TopKTopP kernel
         # libopapi.so exports aclnnApplyTopKTopP, but the ascend960dt (and
         # ascend910_93) op package registers no TopKTopP binary, so
@@ -397,7 +401,9 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
     }
 )
-_A6_CAPABILITIES = _A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES
+_A6_CAPABILITIES = (_A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES) | {
+    HardwareCapability.DISABLE_OP_EARLY_START,
+}
 _DEFAULT_WORKER_CLS = "vllm_ascend.worker.worker.NPUWorker"
 _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyType(
     {
