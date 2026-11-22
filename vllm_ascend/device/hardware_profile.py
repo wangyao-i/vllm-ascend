@@ -396,13 +396,12 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # Same as GemmaRmsNorm: no ascend960dt binary, so RMSNorm with residual
         # falls back to npu_add_rms_norm plus a bias add.
         HardwareCapability.ADD_RMS_NORM_BIAS_OP,
-        # A6-ADAPT: the fused Triton MRoPE kernel raises a vector core exception
-        # on A6. Attention falls back to split + RMSNorm + rotary_emb.
-        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
     }
 )
 _A6_CAPABILITIES = (_A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES) | {
     HardwareCapability.DISABLE_OP_EARLY_START,
+    # Requires the Triton backend to use the A6 core counts for AutoBlockify.
+    HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
 }
 _DEFAULT_WORKER_CLS = "vllm_ascend.worker.worker.NPUWorker"
 _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyType(

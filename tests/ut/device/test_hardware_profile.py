@@ -63,6 +63,10 @@ def test_a6_uses_unfused_matmul_reduce_scatter_and_disables_op_early_start():
     assert not a5.supports(HardwareCapability.DISABLE_OP_EARLY_START)
 
 
+def test_a6_enables_fused_qkv_rmsnorm_mrope():
+    assert get_hardware_profile(AscendDeviceType.A6).supports(HardwareCapability.SPLIT_QKV_RMSNORM_MROPE)
+
+
 _EXPECTED_CAPABILITIES = {
     AscendDeviceType.A2: _STANDARD_CAPABILITIES
     | {
