@@ -1,0 +1,54 @@
+diff --git a/attention/sparse_flash_attention/op_kernel/arch92/sparse_flash_attention_service_vector_mla_arch92.h b/attention/sparse_flash_attention/op_kernel/arch92/sparse_flash_attention_service_vector_mla_arch92.h
+index f81d08a1..dca6911b 100644
+--- a/attention/sparse_flash_attention/op_kernel/arch92/sparse_flash_attention_service_vector_mla_arch92.h
++++ b/attention/sparse_flash_attention/op_kernel/arch92/sparse_flash_attention_service_vector_mla_arch92.h
+@@ -129,6 +129,7 @@ private:
+     __aicore__ inline void InitCubeVecSharedParams(CVSharedParams& sharedParams, int32_t aicIdx, uint8_t subBlockIdx,
+                                                    int64_t dSizeRope);
+     __aicore__ inline void ComputeNeedInitSFA(CVSharedParams& sharedParams) const;
++    __aicore__ inline void ClearTndOutputPadding(const ConstInfo& constInfo);
+     __aicore__ inline void GetExtremeValue(T& negativeScalar);
+     __aicore__ inline void InitSinksBuffer(ConstInfo& constInfo);
+
+@@ -666,6 +667,32 @@ TEMPLATES_DEF_NO_DEFAULT __aicore__ inline void SFAVectorService<TEMPLATE_ARGS>:
+     SyncAll();
+ }
+
++TEMPLATES_DEF_NO_DEFAULT __aicore__ inline void SFAVectorService<TEMPLATE_ARGS>::ClearTndOutputPadding(
++    const ConstInfo& constInfo)
++{
++    // In TND the last cumulative Q length can be shorter than the physical T.
++    // The attention loop writes only the prefix. Give each vector core whole tail rows.
++    const int64_t validRows = constInfo.bSize == 0 ? 0 : cuSeqlensQGm.GetValue(constInfo.bSize - 1);
++    const uint64_t coreCount = GetBlockNum() * CV_RATIO;
++    if (validRows < 0 || static_cast<uint64_t>(validRows) >= constInfo.s1Size || coreCount == 0) {
++        return;
++    }
++    const uint64_t tailRows = constInfo.s1Size - validRows;
++    const uint64_t rowsPerCore = (tailRows + coreCount - 1) / coreCount;
++    const uint64_t firstRow = validRows + constInfo.aivIdx * rowsPerCore;
++    if (firstRow >= constInfo.s1Size) {
++        return;
++    }
++    const uint64_t rowsLeft = constInfo.s1Size - firstRow;
++    const uint64_t rows = rowsLeft < rowsPerCore ? rowsLeft : rowsPerCore;
++    const uint64_t rowWidth = constInfo.gSize * constInfo.dSizeV;
++    auto event = GetTPipePtr()->AllocEventID<HardEvent::MTE3_V>();
++    matmul::InitOutput<OUTPUT_T>(attentionOutGm[firstRow * rowWidth], rows * rowWidth, 0);
++    SetFlag<HardEvent::MTE3_V>(event);
++    WaitFlag<HardEvent::MTE3_V>(event);
++    GetTPipePtr()->ReleaseEventID<HardEvent::MTE3_V>(event);
++}
++
+ TEMPLATES_DEF_NO_DEFAULT __aicore__ inline void SFAVectorService<TEMPLATE_ARGS>::CleanOutput(
+     __gm__ uint8_t* attentionOut, __gm__ uint8_t* softmaxMax, __gm__ uint8_t* softmaxSum, ConstInfo& constInfo)
+ {
+@@ -679,6 +706,8 @@ TEMPLATES_DEF_NO_DEFAULT __aicore__ inline void SFAVectorService<TEMPLATE_ARGS>:
+             InitOutputSingleCore(constInfo);
+             WaitFlag<AscendC::HardEvent::MTE3_V>(initOutputEventId);
+             GetTPipePtr()->ReleaseEventID<AscendC::HardEvent::MTE3_V>(initOutputEventId);
++        } else if constexpr (LAYOUT_T == SFA_LAYOUT::TND) {
++            ClearTndOutputPadding(constInfo);
+         }
+     }
+ }
