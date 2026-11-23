@@ -126,6 +126,9 @@ class HardwareCapability(Enum):
     GRAPH_MM_REDUCE_SCATTER_FUSION = auto()
     # Register the FX graph rewrite that fuses the supported muls-plus-add pattern.
     GRAPH_MULS_ADD_FUSION = auto()
+    # Out-of-place torch._foreach_add (aclnnForeachAddListV2). The in-place V1
+    # form exists on every generation; only V2 is missing on A6.
+    FOREACH_ADD_V2 = auto()
     # Register the FX graph rewrites for supported RMSNorm-plus-quant patterns.
     GRAPH_NORM_QUANT_FUSION = auto()
     # Register the FX graph rewrite that fuses q/k RMSNorm, RoPE and the weight-less
@@ -383,6 +386,7 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
         HardwareCapability.GRAPH_QKV_NORM_ROPE_FUSION,
         HardwareCapability.INPLACE_PARTIAL_ROTARY_MUL_NEGATE_SIN,
@@ -439,6 +443,7 @@ _A5_CAPABILITIES = frozenset(
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
         HardwareCapability.LOCAL_KV_COMM_RESOURCE,
         HardwareCapability.LORA_CUSTOM_OPS,
@@ -470,11 +475,11 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # --npu-arch=dav-9201) instead of the legacy ascendc.cmake route, so
         # vllm_ascend_C is no longer missing on A6.
         # A6-ADAPT: no aclnnForeachAddListV2 on A6
-        # The muls_add pass traces its pattern with torch._foreach_add, which
-        # lowers to aclnnForeachAddListV2 and fails with 561103
-        # (AclOpKernelInit failed) on A6's CANN 9.2.0. The in-place V1 variant
-        # works; only the out-of-place V2 form is missing.
-        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        # Only the out-of-place V2 form is missing; the in-place V1 form works.
+        # GRAPH_MULS_ADD_FUSION itself stays available: the muls_add pass now
+        # registers just the plain mul+add patterns on A6, and those never trace a
+        # torch._foreach_add (see MulsAddFusionPass).
+        HardwareCapability.FOREACH_ADD_V2,
         # A6-ADAPT: no TopKTopP kernel
         # libopapi.so exports aclnnApplyTopKTopP, but the ascend960dt (and
         # ascend910_93) op package registers no TopKTopP binary, so
@@ -614,6 +619,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                     HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
                     HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
                     HardwareCapability.GRAPH_MULS_ADD_FUSION,
+                    HardwareCapability.FOREACH_ADD_V2,
                     HardwareCapability.GRAPH_NORM_QUANT_FUSION,
                     HardwareCapability.LOCAL_KV_COMM_RESOURCE,
                     HardwareCapability.LORA_CUSTOM_OPS,
