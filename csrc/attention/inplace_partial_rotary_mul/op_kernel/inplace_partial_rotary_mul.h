@@ -207,7 +207,15 @@ __aicore__ inline void InplacePartialRotaryMulABA<T, isBrc, R>::InterleavedInver
     uint64_t fullMask = negateSin ? 0xAAAAAAAAAAAAAAAA : 0x5555555555555555; //0101010101010101
     uint64_t tailMask = negateSin ? 0xAA : 0x55;
     SetVectorMask<float, MaskMode::NORMAL>(0, fullMask);
-    Muls<float, false>(ub, ub, -1.0f, MASK_PLACEHOLDER, repeatTimes, {1,1,8,8});
+    // AscendC Muls takes a uint8 repeat count. A prefill tile can cover
+    // more than 255 vectors when several tokens share a core.
+    constexpr int64_t maxRepeat = 255;
+    for (int64_t first = 0; first < repeatTimes; first += maxRepeat) {
+        const int64_t left = repeatTimes - first;
+        const auto repeats = static_cast<uint8_t>(left < maxRepeat ? left : maxRepeat);
+        const int64_t offset = first * fp32Mask;
+        Muls<float, false>(ub[offset], ub[offset], -1.0f, MASK_PLACEHOLDER, repeats, {1,1,8,8});
+    }
     if (remain != 0) {
         int32_t tailTimes = count % 64 / 8;
         SetVectorMask<float, MaskMode::NORMAL>(0, tailMask);

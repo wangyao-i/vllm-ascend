@@ -1,0 +1,6 @@
+pr: 59
+entries:
+  - category: bugfix
+    text: Fixed incorrect multi-head RoPE outputs on A6 when larger prefill tiles overflowed the vector repeat count, affecting DeepSeek-V4 accuracy.
+    model: deepseek-v4
+    hardware: [A6]
