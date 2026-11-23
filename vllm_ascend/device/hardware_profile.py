@@ -119,6 +119,9 @@ class HardwareCapability(Enum):
     GRAPH_MM_REDUCE_SCATTER_FUSION = auto()
     # Register the FX graph rewrite that fuses the supported muls-plus-add pattern.
     GRAPH_MULS_ADD_FUSION = auto()
+    # Out-of-place torch._foreach_add (aclnnForeachAddListV2). The in-place V1
+    # form exists on every generation; only V2 is missing on A6.
+    FOREACH_ADD_V2 = auto()
     # Register the FX graph rewrites for supported RMSNorm-plus-quant patterns.
     GRAPH_NORM_QUANT_FUSION = auto()
     # Register the FX graph rewrite that fuses q/k RMSNorm, RoPE and the weight-less
@@ -291,6 +294,7 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
         HardwareCapability.GRAPH_QKV_NORM_ROPE_FUSION,
         HardwareCapability.INPLACE_PARTIAL_ROTARY_MUL_NEGATE_SIN,
@@ -341,6 +345,7 @@ _A5_CAPABILITIES = frozenset(
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
         HardwareCapability.LOCAL_KV_COMM_RESOURCE,
         HardwareCapability.LORA_CUSTOM_OPS,
@@ -364,6 +369,9 @@ _A5_CAPABILITIES = frozenset(
 # A6-ADAPT: no compiled extension on A6
 _A6_UNSUPPORTED_CAPABILITIES = frozenset(
     {
+        # Use generic cache writes without changing tensor views or dtypes.
+        HardwareCapability.SCATTER_ND_CACHE_STORE,
+        HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
         HardwareCapability.FLA_GDN_PREFILL,
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
@@ -380,6 +388,11 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # The current A6 CANN MatMul+ReduceScatter kernel rejects the fusion pass's
         # AIV communication mode. Sequence parallelism can use the unfused ops.
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
+        # Only the out-of-place V2 form is missing; the in-place V1 form works.
+        # GRAPH_MULS_ADD_FUSION itself stays available: the muls_add pass now
+        # registers just the plain mul+add patterns on A6, and those never trace a
+        # torch._foreach_add (see MulsAddFusionPass).
+        HardwareCapability.FOREACH_ADD_V2,
         # A6-ADAPT: no TopKTopP kernel
         # libopapi.so exports aclnnApplyTopKTopP, but the ascend960dt (and
         # ascend910_93) op package registers no TopKTopP binary, so
@@ -506,6 +519,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                     HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
                     HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
                     HardwareCapability.GRAPH_MULS_ADD_FUSION,
+                    HardwareCapability.FOREACH_ADD_V2,
                     HardwareCapability.GRAPH_NORM_QUANT_FUSION,
                     HardwareCapability.LOCAL_KV_COMM_RESOURCE,
                     HardwareCapability.LORA_CUSTOM_OPS,

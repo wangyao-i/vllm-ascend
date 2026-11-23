@@ -1,0 +1,60 @@
+diff --git a/attention/lightning_indexer_v2/op_kernel/arch35/lightning_indexer_v2_kernel_arch35.h b/attention/lightning_indexer_v2/op_kernel/arch35/lightning_indexer_v2_kernel_arch35.h
+index c21ff04c..759db203 100644
+--- a/attention/lightning_indexer_v2/op_kernel/arch35/lightning_indexer_v2_kernel_arch35.h
++++ b/attention/lightning_indexer_v2/op_kernel/arch35/lightning_indexer_v2_kernel_arch35.h
+@@ -151,6 +151,7 @@ protected:
+                                             __gm__ uint8_t* liV2CmpResidualK);
+     // ================================Split Core================================
+     __aicore__ inline void SplitCore(uint32_t curCoreIdx, uint32_t& coreNum, LIV2Common::SplitCoreInfo& info);
++    __aicore__ inline void InitMainCoreFromMetadata(uint32_t cubeCoreIdx, GlobalTensor<uint32_t>& metadataGm);
+     __aicore__ inline void SplitCoreByAICPU(uint32_t cubeCoreIdx, uint32_t vecCoreIdx,
+                                             GlobalTensor<uint32_t>& metadataGm);
+     __aicore__ inline uint32_t GetTotalBaseBlockNum();
+@@ -292,8 +293,8 @@ __aicore__ inline void LightningIndexerV2Kernel<LIT>::GetS1S2ActualSeqLen(uint32
+ }
+
+ template <typename LIT>
+-__aicore__ inline void LightningIndexerV2Kernel<LIT>::SplitCoreByAICPU(uint32_t cubeCoreIdx, uint32_t vecCoreIdx,
+-                                                                       GlobalTensor<uint32_t>& metadataGm)
++__aicore__ inline void LightningIndexerV2Kernel<LIT>::InitMainCoreFromMetadata(uint32_t cubeCoreIdx,
++                                                                               GlobalTensor<uint32_t>& metadataGm)
+ {
+     uint32_t liV2CoreEnableIndex = GetAttrAbsIndex(cubeCoreIdx, LI_V2_CORE_ENABLE_INDEX);
+     uint32_t liV2BN2StartIndex = GetAttrAbsIndex(cubeCoreIdx, LI_V2_BN2_START_INDEX);
+@@ -303,15 +304,9 @@ __aicore__ inline void LightningIndexerV2Kernel<LIT>::SplitCoreByAICPU(uint32_t
+     uint32_t liV2MEndIndex = GetAttrAbsIndex(cubeCoreIdx, LI_V2_M_END_INDEX);
+     uint32_t liV2S2EndIndex = GetAttrAbsIndex(cubeCoreIdx, LI_V2_S2_END_INDEX);
+
+-    uint32_t liV2ZeroCoreEnableIndex = GetAttrAbsIndex(0, LI_V2_CORE_ENABLE_INDEX);
+-    if (metadataGm.GetValue(liV2ZeroCoreEnableIndex) == 0) {
+-        isUsedCoreEqZero = true;
+-    }
+-    if (metadataGm.GetValue(liV2CoreEnableIndex) == 0) {
+-        liV2SplitInfo.isCoreEnable = false;
++    liV2SplitInfo.isCoreEnable = metadataGm.GetValue(liV2CoreEnableIndex) != 0;
++    if (!liV2SplitInfo.isCoreEnable) {
+         return;
+-    } else {
+-        liV2SplitInfo.isCoreEnable = true;
+     }
+
+     liV2SplitInfo.bN2Start = metadataGm.GetValue(liV2BN2StartIndex);
+@@ -368,6 +363,18 @@ __aicore__ inline void LightningIndexerV2Kernel<LIT>::SplitCoreByAICPU(uint32_t
+
+     uint32_t ldFirstWorkSpaceIndex = GetAttrAbsIndex(cubeCoreIdx, LI_V2_FIRST_LD_V2_DATA_WORKSPACE_IDX_INDEX, false);
+     liV2LoadInfo.saveWorkSpaceIdx = metadataGm.GetValue(ldFirstWorkSpaceIndex);
++}
++
++template <typename LIT>
++__aicore__ inline void LightningIndexerV2Kernel<LIT>::SplitCoreByAICPU(uint32_t cubeCoreIdx, uint32_t vecCoreIdx,
++                                                                       GlobalTensor<uint32_t>& metadataGm)
++{
++    isUsedCoreEqZero = metadataGm.GetValue(GetAttrAbsIndex(0, LI_V2_CORE_ENABLE_INDEX)) == 0;
++    if (isUsedCoreEqZero) {
++        return;
++    }
++    InitMainCoreFromMetadata(cubeCoreIdx, metadataGm);
++    // A vector core can own decode rows even when its paired cube has no main work.
+     if ASCEND_IS_AIV {
+         uint32_t ldCoreEnableIndex = GetAttrAbsIndex(vecCoreIdx, LD_V2_CORE_ENABLE_INDEX, true);
+         liV2LoadInfo.isLdCoreEnable = metadataGm.GetValue(ldCoreEnableIndex);

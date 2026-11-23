@@ -122,3 +122,19 @@ def test_inplace_partial_rotary_mul(num_tokens: int, dtype, atol, rtol, negate_s
     gc.collect()
     torch.npu.empty_cache()
     torch.npu.reset_peak_memory_stats()
+
+
+@pytest.mark.skipif(get_ascend_device_type() != AscendDeviceType.A6, reason="A6 multi-head prefill regression")
+@pytest.mark.parametrize("num_tokens", [128, 197, 341, 512])
+def test_dsv4_multihead_prefill_sign(num_tokens):
+    # A four-token tile processes 256 vectors of 64 FP32 values.
+    # Force a nonzero sine on every row so skipped negations are visible.
+    heads, dim, width = 64, 512, 64
+    x = torch.ones(num_tokens, 1, heads, dim, dtype=torch.bfloat16, device="npu")
+    sin = torch.ones(num_tokens, 1, 1, width, dtype=torch.float32, device="npu")
+    torch.ops._C_ascend.inplace_partial_rotary_mul(
+        x, torch.zeros_like(sin), sin, rotary_mode="interleave", partial_slice=[dim - width, dim]
+    )
+    expected = torch.ones_like(x)
+    expected[..., dim - width :: 2] = -1
+    torch.testing.assert_close(x, expected, rtol=0, atol=0)

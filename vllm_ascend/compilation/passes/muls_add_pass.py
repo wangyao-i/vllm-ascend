@@ -24,6 +24,10 @@ from vllm.config.compilation import Range
 from vllm.logger import logger
 
 from vllm_ascend.compilation.passes.base_pattern import BasePattern
+from vllm_ascend.device.hardware_profile import (
+    HardwareCapability,
+    get_current_hardware_profile,
+)
 
 
 class MulsAddPattern(BasePattern):
@@ -117,12 +121,16 @@ class MulsAddFusionPass(VllmInductorPass):
         routed_scaling_factor = getattr(vllm_config.model_config.hf_text_config, "routed_scaling_factor", 1.0)
         # Match functionalized muls only. Replacing a raw mul_ would discard
         # the mutation observed by aliases of the routed output.
-        for pattern_type in (
-            MulsAddPattern,
-            MulsAddSharedFirstPattern,
-            MulsForeachAddPattern,
-            MulsForeachAddSharedFirstPattern,
-        ):
+        pattern_types = [MulsAddPattern, MulsAddSharedFirstPattern]
+        if get_current_hardware_profile().supports(HardwareCapability.FOREACH_ADD_V2):
+            # These two patterns are traced with torch._foreach_add, which lowers
+            # to aclnnForeachAddListV2. That binary has no ascend960dt build, so
+            # tracing them raises 561103 (AclOpKernelInit failed) on A6. A6 model
+            # code emits a plain ``x * scale + y`` instead (see
+            # ops/fused_moe/fused_moe.py), which the two plain patterns already
+            # cover.
+            pattern_types += [MulsForeachAddPattern, MulsForeachAddSharedFirstPattern]
+        for pattern_type in pattern_types:
             pattern_type(vllm_config, scale=routed_scaling_factor).register(self.pattern_match_passes)
 
     def __call__(self, graph: torch.fx.Graph) -> None:  # type: ignore[override]
