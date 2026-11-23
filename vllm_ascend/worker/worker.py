@@ -528,6 +528,8 @@ class NPUWorker(WorkerBase):
         device = torch.device(f"{current_platform.device_type}:{visible_device_index}")
 
         torch.npu.set_device(device)
+        if get_current_hardware_profile().supports(HardwareCapability.DISABLE_OP_EARLY_START):
+            torch.npu.set_op_early_start(0)
 
         if enable_custom_op():
             register_device_print()
