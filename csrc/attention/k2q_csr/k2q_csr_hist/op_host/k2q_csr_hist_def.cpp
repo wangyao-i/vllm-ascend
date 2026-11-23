@@ -55,6 +55,8 @@ public:
             .PrecisionReduceFlag(true)
             .ExtendCfgInfo("opFile.value", "k2q_csr_hist_apt");
         this->AICore().AddConfig("ascend950", a5Config);
+        this->AICore().AddConfig("ascend960dt", a5Config);
+        this->AICore().AddConfig("ascend960pr", a5Config);
     }
 };
 OP_ADD(K2qCsrHist);

@@ -29,10 +29,15 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.ATB_WARMUP,
         HardwareCapability.BGMV_SGMV_META_REGISTRATION,
         HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
         HardwareCapability.GRAPH_QKV_NORM_ROPE_FUSION,
         HardwareCapability.INPLACE_PARTIAL_ROTARY_MUL_NEGATE_SIN,
@@ -116,11 +121,16 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
             HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
             HardwareCapability.FLA_GDN_PREFILL,
+            HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+            HardwareCapability.GEMMA_RMS_NORM_OP,
+            HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+            HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
             HardwareCapability.FP8_ATTENTION,
             HardwareCapability.POOL_KEY_INDEXER_FP8,
             HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
             HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
             HardwareCapability.GRAPH_MULS_ADD_FUSION,
+            HardwareCapability.FOREACH_ADD_V2,
             HardwareCapability.GRAPH_NORM_QUANT_FUSION,
             HardwareCapability.LOCAL_KV_COMM_RESOURCE,
             HardwareCapability.LORA_CUSTOM_OPS,
@@ -141,6 +151,27 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.UNRESTRICTED_MLAPO,
         }
     ),
+}
+
+_EXPECTED_CAPABILITIES[AscendDeviceType.A6] = (
+    _EXPECTED_CAPABILITIES[AscendDeviceType.A5]
+    - {
+        HardwareCapability.SCATTER_ND_CACHE_STORE,
+        HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
+        HardwareCapability.FLA_GDN_PREFILL,
+        HardwareCapability.NATIVE_GDN_CHUNK_PREFILL,
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
+        HardwareCapability.FOREACH_ADD_V2,
+        HardwareCapability.NPU_TOP_K_TOP_P,
+        HardwareCapability.GEMMA_RMS_NORM_OP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
+    }
+) | {
+    HardwareCapability.DISABLE_OP_EARLY_START,
+    HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
+    HardwareCapability.DSV4_DELIVERED_COMPRESSOR,
+    HardwareCapability.DSV4_DELIVERED_MHC,
 }
 
 

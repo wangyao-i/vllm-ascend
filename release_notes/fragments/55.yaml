@@ -1,0 +1,4 @@
+pr: 55
+entries:
+  - category: bugfix
+    text: Restored community operator dispatch on A2/A3/A5 while isolating A6 delivered-kernel adaptations. A6 FP8 lightning indexing now reports a missing delivered operator instead of selecting an incompatible INT8 kernel.

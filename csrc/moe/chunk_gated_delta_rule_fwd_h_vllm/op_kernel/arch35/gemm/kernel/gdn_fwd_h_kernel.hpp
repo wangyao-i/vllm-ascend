@@ -91,7 +91,11 @@ template<
 class GDNFwdHKernel {
 public:
 
+#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
+    using ArchTag = Arch::Ascend960DT;
+#else
     using ArchTag = Arch::Ascend950;
+#endif
     using CubeScheduler = typename Catlass::Gemm::Block::BlockSchedulerGdnFwdHCube;
     using VecScheduler = typename Catlass::Gemm::Block::BlockSchedulerGdnFwdHVec;
 
