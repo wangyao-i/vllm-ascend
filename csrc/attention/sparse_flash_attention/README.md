@@ -11,6 +11,27 @@
 |<term>Atlas 推理系列产品</term>|      ×     |
 |<term>Atlas 训练系列产品</term>|      ×     |
 
+## Ascend 960DT 的 CANN 9.3 算子补丁
+
+Ascend 960DT 调用 CANN 的 `aclnnSparseFlashAttention`。在 `TND` 布局下，最后一个累计 Q 长度之后的行用于补齐。`cann-9.3-tnd-padding.patch` 使 A6 的向量核只对这段 attention 输出写零，保留原有的全量初始化条件。
+
+在与已安装 CANN 算子匹配的 ops-transformer 源码目录，设置 `VLLM_ASCEND_SRC` 为本仓库的绝对路径，然后构建独立算子包。补丁以 `75b6beb460eb32644a6c87fa5f9d76b756d17b4d` 为基线。
+
+```sh
+patch_file="$VLLM_ASCEND_SRC/csrc/attention/sparse_flash_attention/cann-9.3-tnd-padding.patch"
+git apply --check "$patch_file"
+git apply "$patch_file"
+bash build.sh --pkg --ops=sparse_flash_attention --soc=ascend960dt --vendor_name=a6_sfa_tail
+```
+
+将算子包解到独立目录，令 `SFA_PACKAGE_DIR` 指向含 `packages/` 的解包根目录。在已加载 CANN 环境的终端进入本仓库运行回归。用例同时检查普通调用和向预填 NaN 的输出重放 NPU 图。
+
+```sh
+vendor="$SFA_PACKAGE_DIR/packages/vendors/a6_sfa_tail_transformer"
+export ASCEND_CUSTOM_OPP_PATH="$vendor${ASCEND_CUSTOM_OPP_PATH:+:$ASCEND_CUSTOM_OPP_PATH}"
+pytest tests/e2e/nightly/single_node/ops/singlecard_ops/test_sparse_flash_attention.py -k tnd_output_padding
+```
+
 ## 功能说明
 
 - API功能：sparse_flash_attention（SFA）是针对大序列长度推理场景的高效注意力计算模块，该模块通过“只计算关键部分”大幅减少计算量，然而会引入大量的离散访存，造成数据搬运时间增加，进而影响整体性能。
