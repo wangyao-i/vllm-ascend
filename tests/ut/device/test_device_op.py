@@ -10,6 +10,29 @@ from vllm_ascend.device.hardware import AscendDeviceType
 from vllm_ascend.device.hardware_profile import get_hardware_profile
 
 
+@pytest.mark.parametrize(
+    ("storage_dtype", "use_fp4", "expect_dtype"),
+    [(torch.uint8, True, True), (torch.uint8, False, False), (torch.bfloat16, True, False)],
+)
+def test_moe_routing_passes_logical_dtype_only_for_packed_fp4(storage_dtype, use_fp4, expect_dtype):
+    hidden_states = torch.zeros((1, 2), dtype=storage_dtype)
+    topk_ids = torch.zeros((1, 1), dtype=torch.int32)
+    fp4 = object()
+    with (
+        mock.patch("vllm_ascend.device.device_op.torch_npu.float4_e2m1fn_x2", fp4, create=True),
+        mock.patch("vllm_ascend.device.device_op.torch_npu.npu_moe_init_routing_v2", create=True) as op,
+    ):
+        BaseDeviceAdaptor.npu_moe_init_routing(
+            hidden_states, topk_ids, active_num=1, expert_num=1, act_quant_type=fp4 if use_fp4 else None
+        )
+
+    op.assert_called_once()
+    if expect_dtype:
+        assert op.call_args.kwargs["x_dtype"] is fp4
+    else:
+        assert "x_dtype" not in op.call_args.kwargs
+
+
 @pytest.mark.parametrize("device", [AscendDeviceType.A2, AscendDeviceType.A3, AscendDeviceType.A5])
 @pytest.mark.parametrize("shape", [(2, 8), (2, 3, 8), (2, 1, 3, 8)])
 @pytest.mark.parametrize("inverse", [False, True])

@@ -147,6 +147,7 @@ class HardwareCapability(Enum):
     IRQ_CPU_RESERVATION = auto()
     # Create the local communication resource used by supported KV-transfer deployments.
     LOCAL_KV_COMM_RESOURCE = auto()
+    DISABLE_OP_EARLY_START = auto()
     # Use vLLM-Ascend's custom BGMV/SGMV LoRA kernels when rank constraints also pass.
     LORA_CUSTOM_OPS = auto()
     # Use the token-fused MLA cache protocol for eligible FlashMLA models.
@@ -478,6 +479,14 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # --npu-arch=dav-9201) instead of the legacy ascendc.cmake route, so
         # vllm_ascend_C is no longer missing on A6.
         # A6-ADAPT: no aclnnForeachAddListV2 on A6
+        # The muls_add pass traces its pattern with torch._foreach_add, which
+        # lowers to aclnnForeachAddListV2 and fails with 561103
+        # (AclOpKernelInit failed) on A6's CANN 9.2.0. The in-place V1 variant
+        # works; only the out-of-place V2 form is missing.
+        HardwareCapability.GRAPH_MULS_ADD_FUSION,
+        # The current A6 CANN MatMul+ReduceScatter kernel rejects the fusion pass's
+        # AIV communication mode. Sequence parallelism can use the unfused ops.
+        HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         # Only the out-of-place V2 form is missing; the in-place V1 form works.
         # GRAPH_MULS_ADD_FUSION itself stays available: the muls_add pass now
         # registers just the plain mul+add patterns on A6, and those never trace a
@@ -499,12 +508,13 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # Same as GemmaRmsNorm: no ascend960dt binary, so RMSNorm with residual
         # falls back to npu_add_rms_norm plus a bias add.
         HardwareCapability.ADD_RMS_NORM_BIAS_OP,
-        # A6-ADAPT: the fused Triton MRoPE kernel raises a vector core exception
-        # on A6. Attention falls back to split + RMSNorm + rotary_emb.
-        HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
     }
 )
-_A6_CAPABILITIES = _A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES
+_A6_CAPABILITIES = (_A5_CAPABILITIES - _A6_UNSUPPORTED_CAPABILITIES) | {
+    HardwareCapability.DISABLE_OP_EARLY_START,
+    # Requires the Triton backend to use the A6 core counts for AutoBlockify.
+    HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
+}
 _DEFAULT_WORKER_CLS = "vllm_ascend.worker.worker.NPUWorker"
 _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyType(
     {

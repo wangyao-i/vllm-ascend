@@ -372,6 +372,14 @@ class BaseDeviceAdaptor:
         quant_mode: int = -1,
         act_quant_type: torch.dtype | None = None,
     ):
+        routing_kwargs = {}
+        # Packed MXFP4 has uint8 storage, but the routing operator needs its logical dtype.
+        if (
+            hidden_states.dtype == torch.uint8
+            and act_quant_type is not None
+            and act_quant_type == getattr(torch_npu, "float4_e2m1fn_x2", None)
+        ):
+            routing_kwargs["x_dtype"] = act_quant_type
         return torch_npu.npu_moe_init_routing_v2(
             hidden_states,
             topk_ids,
@@ -382,6 +390,7 @@ class BaseDeviceAdaptor:
             expert_tokens_num_flag=expert_tokens_num_flag,
             active_expert_range=active_expert_range,
             quant_mode=quant_mode,
+            **routing_kwargs,
         )
 
     @staticmethod
