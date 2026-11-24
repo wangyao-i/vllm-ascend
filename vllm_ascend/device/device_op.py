@@ -1990,7 +1990,7 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
 
 
 class A6DeviceAdaptor(BaseDeviceAdaptor):
-    """A6 adaptations: base behaviour plus the fp8 indexer family.
+    """A6 adaptations for communication and the fp8 indexer family.
 
     Everything the DSA path needs that differs from the base adaptor is decided
     by one axis: this profile runs the fp8 indexer KV plan (``indexer_kv_dtype
@@ -2000,11 +2000,15 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
     (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
 
-    FP8 preparation delegates to A5; BF16 indexer uses the existing V2 binding
-    and sparse attention calls CANN 9.3 through the custom Torch binding. Other
-    operations retain the base behaviour, including the weight layouts validated
-    with the A6 kernels.
+    FP8 preparation and MatMul+ReduceScatter communication delegate to A5;
+    BF16 indexer uses the existing V2 binding and sparse attention calls CANN 9.3
+    through the custom Torch binding. Other operations retain the base behaviour,
+    including the weight layouts validated with the A6 kernels.
     """
+
+    # A6 accepts ai_cpu/ccu, while the base adaptor defaults to aiv. Reuse A5's
+    # ai_cpu default and its CCU_SCHED selection without changing other ops.
+    npu_mm_reduce_scatter_base = staticmethod(A5DeviceAdaptor.npu_mm_reduce_scatter_base)
 
     # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
 
