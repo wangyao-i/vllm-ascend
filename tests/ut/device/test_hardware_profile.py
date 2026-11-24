@@ -54,10 +54,10 @@ _STANDARD_CAPABILITIES = frozenset(
 )
 
 
-def test_a6_uses_unfused_matmul_reduce_scatter_and_disables_op_early_start():
+def test_a6_enables_matmul_reduce_scatter_fusion_and_disables_op_early_start():
     a6 = get_hardware_profile(AscendDeviceType.A6)
     a5 = get_hardware_profile(AscendDeviceType.A5)
-    assert not a6.supports(HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION)
+    assert a6.supports(HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION)
     assert a6.supports(HardwareCapability.DISABLE_OP_EARLY_START)
     assert a5.supports(HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION)
     assert not a5.supports(HardwareCapability.DISABLE_OP_EARLY_START)

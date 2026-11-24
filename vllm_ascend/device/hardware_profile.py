@@ -385,9 +385,6 @@ _A6_UNSUPPORTED_CAPABILITIES = frozenset(
         # (AclOpKernelInit failed) on A6's CANN 9.2.0. The in-place V1 variant
         # works; only the out-of-place V2 form is missing.
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
-        # The current A6 CANN MatMul+ReduceScatter kernel rejects the fusion pass's
-        # AIV communication mode. Sequence parallelism can use the unfused ops.
-        HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         # Only the out-of-place V2 form is missing; the in-place V1 form works.
         # GRAPH_MULS_ADD_FUSION itself stays available: the muls_add pass now
         # registers just the plain mul+add patterns on A6, and those never trace a

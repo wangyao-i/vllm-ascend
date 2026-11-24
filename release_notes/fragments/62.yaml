@@ -1,0 +1,13 @@
+pr: 62
+entries:
+  - category: bugfix
+    text: >-
+      Fixed A6 MatMul and ReduceScatter fusion to use A5's AICPU default and
+      CCU_SCHED communication selection instead of the unsupported AIV default.
+      Restored the fusion for sequence-parallel A6 workloads.
+    hardware: [A6]
+  - category: bugfix
+    text: >-
+      Preserved signed MoE routing indices on A6 by removing absolute-value
+      preprocessing before token unpermutation, matching A5.
+    hardware: [A6]

@@ -1990,7 +1990,7 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
 
 
 class A6DeviceAdaptor(BaseDeviceAdaptor):
-    """A6 adaptations: base behaviour plus the fp8 indexer family.
+    """A6 adaptations for communication and the fp8 indexer family.
 
     Everything the DSA path needs that differs from the base adaptor is decided
     by one axis: this profile runs the fp8 indexer KV plan (``indexer_kv_dtype
@@ -2000,11 +2000,51 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
     (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
 
-    FP8 preparation delegates to A5; BF16 indexer uses the existing V2 binding
-    and sparse attention calls CANN 9.3 through the custom Torch binding. Other
-    operations retain the base behaviour, including the weight layouts validated
-    with the A6 kernels.
+    FP8 preparation delegates to A5; MatMul+ReduceScatter communication and token
+    unpermutation follow the same policy as A5. BF16 indexer uses the existing V2
+    binding and sparse attention calls CANN 9.3 through the custom Torch binding.
+    Other operations retain the base behaviour, including the weight layouts
+    validated with the A6 kernels.
     """
+
+    @staticmethod
+    def npu_mm_reduce_scatter_base(
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        hcom: str,
+        world_size: int,
+        *,
+        reduce_op: str = "sum",
+        bias: torch.Tensor | None = None,
+        x1_scale: torch.Tensor | None = None,
+        x2_scale: torch.Tensor | None = None,
+        comm_turn: int = 0,
+        output_dtype: torch.dtype | None = None,
+        comm_mode: str = "ai_cpu",
+    ):
+        expansion_mode = os.environ.get("HCCL_OP_EXPANSION_MODE")
+        if expansion_mode == "CCU_SCHED":
+            comm_mode = "ccu"
+
+        return torch_npu.npu_mm_reduce_scatter_base(
+            x1,
+            x2,
+            hcom,
+            world_size,
+            reduce_op=reduce_op,
+            bias=bias,
+            comm_turn=comm_turn,
+            x1_scale=x1_scale,
+            x2_scale=x2_scale,
+            output_dtype=output_dtype,
+            comm_mode=comm_mode,
+        )
+
+    @staticmethod
+    def npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs):
+        return torch_npu.npu_moe_token_unpermute(
+            permuted_tokens=permuted_tokens, sorted_indices=sorted_indices, probs=probs
+        )
 
     # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
 

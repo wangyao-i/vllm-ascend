@@ -4,9 +4,102 @@ from unittest import mock
 import pytest
 import torch
 
-from vllm_ascend.device.device_op import A5DeviceAdaptor, Ascend310PDeviceAdaptor, BaseDeviceAdaptor
+from vllm_ascend.device.device_op import (
+    A5DeviceAdaptor,
+    A6DeviceAdaptor,
+    Ascend310PDeviceAdaptor,
+    BaseDeviceAdaptor,
+    get_device_adaptor,
+)
 from vllm_ascend.device.hardware import AscendDeviceType
 from vllm_ascend.device.hardware_profile import get_hardware_profile
+
+
+@pytest.mark.parametrize("device", [AscendDeviceType.A5, AscendDeviceType.A6])
+@pytest.mark.parametrize(
+    "expansion_mode,comm_mode,expected_mode",
+    [
+        (None, None, "ai_cpu"),
+        ("CCU_MS", None, "ai_cpu"),
+        ("CCU_SCHED", None, "ccu"),
+        (None, "ccu", "ccu"),
+        ("CCU_MS", "ccu", "ccu"),
+        ("CCU_SCHED", "ai_cpu", "ccu"),
+    ],
+)
+def test_mm_reduce_scatter_uses_supported_communication_mode(
+    monkeypatch, device, expansion_mode, comm_mode, expected_mode
+):
+    if expansion_mode is None:
+        monkeypatch.delenv("HCCL_OP_EXPANSION_MODE", raising=False)
+    else:
+        monkeypatch.setenv("HCCL_OP_EXPANSION_MODE", expansion_mode)
+    x1, x2, bias, x1_scale, x2_scale, output = (object() for _ in range(6))
+    kwargs = {} if comm_mode is None else {"comm_mode": comm_mode}
+    with (
+        mock.patch(
+            "vllm_ascend.device.device_op.get_current_hardware_profile", return_value=get_hardware_profile(device)
+        ),
+        mock.patch(
+            "vllm_ascend.device.device_op.torch_npu.npu_mm_reduce_scatter_base", create=True, return_value=output
+        ) as op,
+    ):
+        adaptor = get_device_adaptor()
+        assert adaptor is (A6DeviceAdaptor if device == AscendDeviceType.A6 else A5DeviceAdaptor)
+        result = adaptor.npu_mm_reduce_scatter_base(
+            x1,
+            x2,
+            "tp_comm",
+            4,
+            bias=bias,
+            x1_scale=x1_scale,
+            x2_scale=x2_scale,
+            output_dtype=torch.bfloat16,
+            **kwargs,
+        )
+
+    assert result is output
+    op.assert_called_once_with(
+        x1,
+        x2,
+        "tp_comm",
+        4,
+        reduce_op="sum",
+        bias=bias,
+        comm_turn=0,
+        x1_scale=x1_scale,
+        x2_scale=x2_scale,
+        output_dtype=torch.bfloat16,
+        comm_mode=expected_mode,
+    )
+
+
+@pytest.mark.parametrize("device", [AscendDeviceType.A2, AscendDeviceType.A3, AscendDeviceType.A5, AscendDeviceType.A6])
+@pytest.mark.parametrize("indices", [[-1, 0, 2], [2, 0, 1], []])
+def test_moe_token_unpermute_preserves_device_index_contract(device, indices):
+    sorted_indices = torch.tensor(indices, dtype=torch.int32)
+    original_indices = sorted_indices.clone()
+    permuted_tokens, probs, output = object(), object(), object()
+    with (
+        mock.patch(
+            "vllm_ascend.device.device_op.get_current_hardware_profile", return_value=get_hardware_profile(device)
+        ),
+        mock.patch(
+            "vllm_ascend.device.device_op.torch_npu.npu_moe_token_unpermute", create=True, return_value=output
+        ) as op,
+    ):
+        result = get_device_adaptor().npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs)
+
+    assert result is output
+    op.assert_called_once()
+    assert op.call_args.kwargs["permuted_tokens"] is permuted_tokens
+    assert op.call_args.kwargs["probs"] is probs
+    actual_indices = op.call_args.kwargs["sorted_indices"]
+    if device in (AscendDeviceType.A5, AscendDeviceType.A6):
+        assert actual_indices is sorted_indices
+    else:
+        torch.testing.assert_close(actual_indices, original_indices.abs())
+    torch.testing.assert_close(sorted_indices, original_indices)
 
 
 @pytest.mark.parametrize(
