@@ -15,19 +15,11 @@
 namespace Catlass::Epilogue {
 
 struct EpilogueAtlasGDNFwdHVnew {
-#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
-    using ArchTag = Arch::Ascend960DT;
-#else
     using ArchTag = Arch::Ascend950;
-#endif
 };
 
 struct EpilogueAtlasGDNFwdHUpdate {
-#if defined(__NPU_ARCH__) && (__NPU_ARCH__ == 9201)
-    using ArchTag = Arch::Ascend960DT;
-#else
     using ArchTag = Arch::Ascend950;
-#endif
 };
 
 }  // namespace Catlass::Epilogue
