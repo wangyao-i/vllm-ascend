@@ -350,9 +350,9 @@ def _delivered_compressor(
     # it. The in-tree ``_C_ascend.compressor`` folds RMSNorm and RoPE into the op (19
     # arguments) and needs a vendor bundle that would shadow the built-in A6 kernel, so it
     # must not be used here.
-    # Validate before calling ``fn``, which writes ``state_cache`` in place.
-    # A late rejection would leave a half-applied step and surface a lazy
-    # state-cache shape guard instead of this message.
+    # Validate before the call, not after: ``fn`` writes ``state_cache`` in place and the
+    # first call also synchronizes, so a late rejection would leave a half-applied step and
+    # surface a lazy state-cache shape guard instead of this message.
     if rotary_mode not in (0, 2):
         raise RuntimeError(
             f"compressor: rotary_mode={rotary_mode} is not supported by the delivered path "
@@ -415,9 +415,7 @@ def _compressor_op(
     """
     import os
 
-    if not get_current_hardware_profile().supports(HardwareCapability.DSV4_DELIVERED_COMPRESSOR) or (
-        os.environ.get("A6_IN_TREE_COMPRESSOR") == "1"
-    ):
+    if os.environ.get("A6_IN_TREE_COMPRESSOR") == "1":
         return torch.ops._C_ascend.compressor(
             x,
             wkv_weight,
@@ -628,7 +626,6 @@ class Compressor(nn.Module):
         return compressed_kv, slot_mapping
 
 
-# Resolve the A6 extension before capture. Operator lookup reports missing packages at use.
-if get_current_hardware_profile().supports(HardwareCapability.DSV4_DELIVERED_COMPRESSOR):
-    with contextlib.suppress(Exception):
-        _load_delivered_compressor()
+# 预热：捕获区里不允许 import / 加载 .so。交付包缺失时回退 torch.ops。
+with contextlib.suppress(Exception):
+    _load_delivered_compressor()

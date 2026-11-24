@@ -14,7 +14,6 @@
  */
 #include "add_rms_norm_bias_tiling.h"
 #include "log/ops_log.h"
-#include "platform/soc_spec.h"
 
 namespace optiling {
 constexpr uint32_t DTYPE_KEY_FP16 = 1;
@@ -391,14 +390,6 @@ static ge::graphStatus Tiling4AddRmsNormBias(gert::TilingContext* context)
     }
     if (socVersion == platform_ascendc::SocVersion::ASCEND950) {
         return addRmsNormBiasRegbase::TilingAddRmsNormBiasRegbase(context);
-    }
-    auto platformInfo = context->GetPlatformInfo();
-    if (platformInfo != nullptr) {
-        auto platform = platform_ascendc::PlatformAscendC(platformInfo);
-        auto npuArch = platform.GetCurNpuArch();
-        if (npuArch == NpuArch::DAV_9201 || npuArch == NpuArch::DAV_9202) {
-            return addRmsNormBiasRegbase::TilingAddRmsNormBiasRegbase(context);
-        }
     }
 
     AddRMSNormBiasTilingData tiling;
