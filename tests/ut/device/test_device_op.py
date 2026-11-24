@@ -74,6 +74,34 @@ def test_mm_reduce_scatter_uses_supported_communication_mode(
     )
 
 
+@pytest.mark.parametrize("device", [AscendDeviceType.A2, AscendDeviceType.A3, AscendDeviceType.A5, AscendDeviceType.A6])
+@pytest.mark.parametrize("indices", [[-1, 0, 2], [2, 0, 1], []])
+def test_moe_token_unpermute_preserves_device_index_contract(device, indices):
+    sorted_indices = torch.tensor(indices, dtype=torch.int32)
+    original_indices = sorted_indices.clone()
+    permuted_tokens, probs, output = object(), object(), object()
+    with (
+        mock.patch(
+            "vllm_ascend.device.device_op.get_current_hardware_profile", return_value=get_hardware_profile(device)
+        ),
+        mock.patch(
+            "vllm_ascend.device.device_op.torch_npu.npu_moe_token_unpermute", create=True, return_value=output
+        ) as op,
+    ):
+        result = get_device_adaptor().npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs)
+
+    assert result is output
+    op.assert_called_once()
+    assert op.call_args.kwargs["permuted_tokens"] is permuted_tokens
+    assert op.call_args.kwargs["probs"] is probs
+    actual_indices = op.call_args.kwargs["sorted_indices"]
+    if device in (AscendDeviceType.A5, AscendDeviceType.A6):
+        assert actual_indices is sorted_indices
+    else:
+        torch.testing.assert_close(actual_indices, original_indices.abs())
+    torch.testing.assert_close(sorted_indices, original_indices)
+
+
 @pytest.mark.parametrize(
     ("storage_dtype", "use_fp4", "expect_dtype"),
     [(torch.uint8, True, True), (torch.uint8, False, False), (torch.bfloat16, True, False)],

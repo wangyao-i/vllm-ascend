@@ -2000,11 +2000,11 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
     (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
 
-    FP8 preparation delegates to A5; MatMul+ReduceScatter communication uses the
-    same policy as A5. BF16 indexer uses the existing V2 binding and sparse
-    attention calls CANN 9.3 through the custom Torch binding. Other operations
-    retain the base behaviour, including the weight layouts validated with the
-    A6 kernels.
+    FP8 preparation delegates to A5; MatMul+ReduceScatter communication and token
+    unpermutation follow the same policy as A5. BF16 indexer uses the existing V2
+    binding and sparse attention calls CANN 9.3 through the custom Torch binding.
+    Other operations retain the base behaviour, including the weight layouts
+    validated with the A6 kernels.
     """
 
     @staticmethod
@@ -2038,6 +2038,12 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
             x2_scale=x2_scale,
             output_dtype=output_dtype,
             comm_mode=comm_mode,
+        )
+
+    @staticmethod
+    def npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs):
+        return torch_npu.npu_moe_token_unpermute(
+            permuted_tokens=permuted_tokens, sorted_indices=sorted_indices, probs=probs
         )
 
     # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
