@@ -13,6 +13,19 @@ from vllm_ascend.device.hardware import AscendDeviceType
 from vllm_ascend.device.hardware_profile import get_hardware_profile
 
 
+def test_a6_moe_unpermute_preserves_invalid_routes():
+    tokens = torch.zeros(2, 4, dtype=torch.bfloat16)
+    indices = torch.tensor([0, -1], dtype=torch.int32)
+    probs = torch.tensor([[1, 0]], dtype=torch.bfloat16)
+
+    with mock.patch.object(device_op.torch_npu, "npu_moe_token_unpermute") as unpermute:
+        result = A6DeviceAdaptor.npu_moe_token_unpermute(tokens, indices, probs)
+
+    unpermute.assert_called_once()
+    assert unpermute.call_args.kwargs["sorted_indices"] is indices
+    assert result is unpermute.return_value
+
+
 @pytest.mark.parametrize("row_stride", [32, 64])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_a6_scatter_preserves_original_views(row_stride, dtype):

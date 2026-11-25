@@ -2001,10 +2001,16 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
 
     FP8 preparation delegates to A5; BF16 indexer uses the existing V2 binding
-    and sparse attention calls CANN 9.3 through the custom Torch binding. Other
+    and sparse attention calls CANN 9.3 through the custom Torch binding.
+    MoE unpermute preserves the invalid routing indices used by CANN. Other
     operations retain the base behaviour, including the weight layouts validated
     with the A6 kernels.
     """
+
+    @staticmethod
+    def npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs):
+        # A -1 marks a route to skip. Taking its absolute value would read expert output row 1.
+        return A5DeviceAdaptor.npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs)
 
     # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
 
