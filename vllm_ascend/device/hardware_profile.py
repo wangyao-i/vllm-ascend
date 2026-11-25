@@ -551,6 +551,11 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
             device_adaptor_family=DeviceAdaptorFamily.A6,
             device_addressing_mode=DeviceAddressingMode.DIRECT,
             weight_layout_policy=WeightLayoutPolicy.CONFIGURABLE,
+            # A6-ADAPT: MC2/ALLTOALL do not run on A6 yet (2026-11-18, 2P DP2/EP2:
+            # all attempts died inside the delivered MoE collectives with
+            # retCode=0x31 [vector core exception], independent of
+            # HCCL_OP_EXPANSION_MODE). Stay on the legacy ALLGATHER selector
+            # until CANN ships a working A6 kernel.
             moe_comm_policy=MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,
             quantization_backend_family=QuantizationBackendFamily.STANDARD,
             capabilities=_A6_CAPABILITIES,
