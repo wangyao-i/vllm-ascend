@@ -1,6 +1,0 @@
-pr: 64
-entries:
-  - category: bugfix
-    text: Fixed empty responses on Ascend A6 when DeepSeek V4 graph warmup wrote compressed KV into the reserved null page.
-    model: deepseek-v4
-    hardware: [A6]
