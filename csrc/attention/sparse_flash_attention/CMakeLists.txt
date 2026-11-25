@@ -8,6 +8,18 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
+# A6 uses CANN 9.3 SparseFlashAttention. Its schema and host registrations
+# must come from the SDK, including when building --ops=ALL.
+if("ascend960dt" IN_LIST ASCEND_COMPUTE_UNIT OR "ascend960pr" IN_LIST ASCEND_COMPUTE_UNIT)
+    set(SFA_NON_A6_UNITS ${ASCEND_COMPUTE_UNIT})
+    list(REMOVE_ITEM SFA_NON_A6_UNITS ascend960dt ascend960pr)
+    if(SFA_NON_A6_UNITS)
+        message(FATAL_ERROR "Build A6 and other SoCs in separate custom-OPP packages.")
+    endif()
+    message(STATUS "Using SDK SparseFlashAttention for A6")
+    return()
+endif()
+
 file(GLOB CURRENT_DIRS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/*)
 if(NOT ENABLE_TEST AND NOT BENCHMARK)
     list(REMOVE_ITEM CURRENT_DIRS tests)

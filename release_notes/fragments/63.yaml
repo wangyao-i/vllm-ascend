@@ -1,0 +1,5 @@
+pr: 63
+entries:
+  - category: performance
+    text: Reduced A6 MoE AllGather token-combine latency by skipping routes assigned to experts on other ranks.
+    hardware: [A6]

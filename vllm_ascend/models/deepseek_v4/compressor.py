@@ -623,6 +623,14 @@ class Compressor(nn.Module):
             rotary_mode=2,
             cache_mode=1,
         )
+        # The scheduler reserves physical block 0 as the null page. Dummy
+        # decode metadata can nevertheless produce compressed positions in
+        # that block. Preserve the skip-write convention used by KV scatter.
+        if slot_mapping.ndim == 1:
+            in_null_block = (slot_mapping >= 0) & (slot_mapping < compressor_metadata.storage_block_size)
+            slot_mapping = slot_mapping.masked_fill(in_null_block, -1)
+        else:
+            slot_mapping = torch.where(slot_mapping[:, :1] == 0, -1, slot_mapping)
         return compressed_kv, slot_mapping
 
 

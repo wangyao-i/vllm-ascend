@@ -29,6 +29,7 @@ from vllm_ascend.device import utils as device_utils
 from vllm_ascend.device.delivered_op import delivered_op_or_none
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 from vllm_ascend.device.paged_mla_cache_read import try_load_strided_mla_cache
+from vllm_ascend.ops.lightning_indexer_v2 import lightning_indexer_v2, lightning_indexer_v2_metadata
 from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
 from vllm_ascend.ops.triton.fla.solve_tril import solve_tril_16x16_kernel
 from vllm_ascend.ops.triton.fused_gdn_gating import fused_gdn_gating_patch
@@ -239,6 +240,14 @@ class BaseDeviceAdaptor:
         quant_mode: int = -1,
         act_quant_type: torch.dtype | None = None,
     ):
+        routing_kwargs = {}
+        # Packed MXFP4 has uint8 storage, but the routing operator needs its logical dtype.
+        if (
+            hidden_states.dtype == torch.uint8
+            and act_quant_type is not None
+            and act_quant_type == getattr(torch_npu, "float4_e2m1fn_x2", None)
+        ):
+            routing_kwargs["x_dtype"] = act_quant_type
         return torch_npu.npu_moe_init_routing_v2(
             hidden_states,
             topk_ids,
@@ -249,6 +258,7 @@ class BaseDeviceAdaptor:
             expert_tokens_num_flag=expert_tokens_num_flag,
             active_expert_range=active_expert_range,
             quant_mode=quant_mode,
+            **routing_kwargs,
         )
 
     @staticmethod
@@ -1990,11 +2000,17 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
     ``npu_scatter_nd_update_sk`` calls, which the A6 host stack rejects
     (``updates dtype DT_INT8``) and which would also leave the fp8 cache empty.
 
-    Only that family is overridden, by delegation to the A5 implementation, so
-    the difference stays visible and each delegation can be checked against the
-    op contract that forced it. Everything else keeps the base behaviour, in
-    particular the weight layouts the A6 kernels were validated with.
+    FP8 preparation delegates to A5; BF16 indexer uses the existing V2 binding
+    and sparse attention calls CANN 9.3 through the custom Torch binding.
+    MoE unpermute preserves the invalid routing indices used by CANN. Other
+    operations retain the base behaviour, including the weight layouts validated
+    with the A6 kernels.
     """
+
+    @staticmethod
+    def npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs):
+        # A -1 marks a route to skip. Taking its absolute value would read expert output row 1.
+        return A5DeviceAdaptor.npu_moe_token_unpermute(permuted_tokens, sorted_indices, probs)
 
     # --- indexer quantisation: fp8 (A5 contract) instead of int8 ---
 
@@ -2095,7 +2111,47 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
         """
         import os as _os
 
-        if not enable_sparse_li_c8 or _os.environ.get("A6_IN_TREE_INDEXER") == "1":
+        if enable_sparse_li_c4:
+            raise RuntimeError("C4 lightning indexer is not supported by the A6 adaptor.")
+        if not enable_sparse_li_c8:
+            query = q_li if q_li_shape_ori is None else q_li.view(q_li_shape_ori)
+            key = kv_cache[indexer_k_cache_idx]
+            weights = weights.float()
+            # V2 uses full cumulative offsets (including zero), PA_BBND and FP32 w.
+            cu_seqlens_q = F.pad(actual_seq_lengths_query.to(torch.int32), (1, 0), value=0)
+            lengths = actual_seq_lengths_key.to(torch.int32)
+            layout = dict(layout_q="TND", layout_k="PA_BBND", mask_mode=3, cmp_ratio=1)
+            meta_kwargs = dict(
+                num_heads_q=query.shape[1],
+                num_heads_k=key.shape[2],
+                head_dim=query.shape[-1],
+                topk=2048,
+                cu_seqlens_q=cu_seqlens_q,
+                seqused_k=lengths,
+                batch_size=lengths.numel(),
+                max_seqlen_q=-1,
+                max_seqlen_k=-1,
+                **layout,
+            )
+            call_kwargs = dict(
+                topk=2048,
+                cu_seqlens_q=cu_seqlens_q,
+                seqused_k=lengths,
+                block_table=attn_metadata.block_table,
+                max_seqlen_q=-1,
+                **layout,
+            )
+            metadata = lightning_indexer_v2_metadata(**meta_kwargs)
+            indices, _ = lightning_indexer_v2(
+                query,
+                key,
+                weights,
+                **call_kwargs,
+                metadata=metadata,
+            )
+            return indices
+
+        if _os.environ.get("A6_IN_TREE_INDEXER") == "1":
             return A5DeviceAdaptor.indexer_select_post_process(
                 q_li,
                 q_li_scale,
@@ -2111,10 +2167,6 @@ class A6DeviceAdaptor(BaseDeviceAdaptor):
                 enable_sparse_li_c4,
                 use_torch_npu_lightning_indexer,
             )
-        if enable_sparse_li_c4:
-            raise RuntimeError("C4 lightning indexer is only supported on A5 devices.")
-
-        import torch.nn.functional as F
 
         key = kv_cache[indexer_k_cache_idx]
         key_scale = kv_cache[indexer_scale_cache_idx]

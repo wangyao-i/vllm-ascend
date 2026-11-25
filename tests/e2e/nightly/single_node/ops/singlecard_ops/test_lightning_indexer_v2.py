@@ -70,6 +70,28 @@ def test_paged_values_and_causal_mask(return_value, strided, cmp_ratio):
         assert values.shape == (0,)
 
 
+@pytest.mark.parametrize("kv_length", [128, 130])
+def test_four_query_rows_cover_causal_prefix(kv_length):
+    device = "npu:0"
+    q = torch.ones((4, 32, 128), dtype=torch.bfloat16, device=device)
+    k = torch.ones((2, 128, 1, 128), dtype=torch.bfloat16, device=device)
+    weights = torch.ones((4, 32), dtype=torch.float32, device=device)
+    table = torch.tensor([[0, 1]], dtype=torch.int32, device=device)
+    common = dict(
+        cu_seqlens_q=torch.tensor([0, 4], dtype=torch.int32, device=device),
+        seqused_k=torch.tensor([kv_length], dtype=torch.int32, device=device),
+        layout_q="TND",
+        layout_k="PA_BBND",
+        mask_mode=3,
+    )
+    topk = 2048
+    metadata = lightning_indexer_v2_metadata(32, 1, 128, topk, batch_size=1, **common)
+    indices, _ = lightning_indexer_v2(q, k, weights, topk, metadata=metadata, block_table=table, **common)
+    for row, visible in zip(indices.cpu().squeeze(1), range(kv_length - 3, kv_length + 1), strict=True):
+        assert row[row >= 0].sort().values.tolist() == list(range(visible))
+        assert (row == -1).sum().item() == topk - visible
+
+
 @pytest.mark.parametrize("layout_q,layout_k", [("TND", "PA_BBND"), ("TND", "TND"), ("BSND", "BSND")])
 @pytest.mark.parametrize("return_value", [0, 1])
 def test_meta_outputs(layout_q, layout_k, return_value):
