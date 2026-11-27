@@ -875,10 +875,17 @@ class DeepseekV41DecoderLayer(nn.Module):
     # not a multiple of the hardware profile's alignment; 1 keeps the plain
     # call. ``__init__`` overrides this with the profile's value.
     hc_pre_width_alignment: int = 1
-    # ``id(hc_fn)`` -> (weakref to that tensor, its padded copy). The weak
-    # reference is the identity check: a reloaded weight can reuse the same
-    # addresses, and a stale padded copy would then be used silently.
-    _hc_fn_pad_cache: dict[tuple[int, int, int], tuple[weakref.ref, torch.Tensor]] | None = None
+    # ``id(hc_fn)`` -> [weakref to that tensor, padded buffer, source data_ptr].
+    # The buffer is allocated once per (weight, dim, pad) and refilled in place:
+    # its address is an input of a captured full graph, so dropping the entry
+    # would free memory that a replay still reads (or force a recapture).
+    _hc_fn_pad_cache: dict[tuple[int, int, int], list] | None = None
+
+    def _pad_hc_fn(self, hc_fn, dim, pad):
+        rows = hc_fn.shape[0]
+        # ``detach`` keeps the padded copy out of the autograd graph, so it never
+        # pins the weight it was derived from.
+        return F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad)).reshape(rows, self.hc_mult * (dim + pad))
 
     def _padded_hc_fn(self, hc_fn, dim, pad):
         """Return ``hc_fn`` with every ``dim``-wide branch block zero-padded."""
@@ -887,19 +894,44 @@ class DeepseekV41DecoderLayer(nn.Module):
             cache = self._hc_fn_pad_cache = {}
         key = (id(hc_fn), dim, pad)
         entry = cache.get(key)
-        if entry is not None and entry[0]() is hc_fn:
+        # Identity, ``_version`` and ``data_ptr`` all survive an in-place reload,
+        # so a hit proves nothing about the values; ``reset_hc_pre_cache`` is what
+        # refreshes them. The address check only catches a storage swap.
+        if entry is not None and entry[0]() is hc_fn and entry[2] == hc_fn.data_ptr():
             return entry[1]
-        rows = hc_fn.shape[0]
-        # ``detach`` keeps the padded copy out of the autograd graph, so it never
-        # pins the weight it was derived from.
-        padded = F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad)).reshape(rows, self.hc_mult * (dim + pad))
+        if entry is not None and entry[0]() is hc_fn:
+            entry[1].copy_(self._pad_hc_fn(hc_fn, dim, pad))
+            entry[2] = hc_fn.data_ptr()
+            return entry[1]
         # Drop entries whose source tensor is gone so a long-lived process that
         # swaps weights cannot accumulate padded copies.
-        dead = [stale for stale, (source, _) in cache.items() if source() is None]
+        dead = [stale for stale, (source, _, _) in cache.items() if source() is None]
         for stale in dead:
             del cache[stale]
-        cache[key] = (weakref.ref(hc_fn), padded)
-        return padded
+        buffer = self._pad_hc_fn(hc_fn, dim, pad)
+        cache[key] = [weakref.ref(hc_fn), buffer, hc_fn.data_ptr()]
+        return buffer
+
+    def reset_hc_pre_cache(self) -> None:
+        """Refill padded weight snapshots in place after their weights changed.
+
+        Loaders write ``param.data.copy_(...)`` and sleep/wake restores write
+        ``get_parameter(name).copy_(...)``; both keep the Parameter object, its
+        ``_version`` and its ``data_ptr``, so nothing inside the cache can notice.
+        The buffers are refilled instead of dropped because their addresses are
+        inputs of the captured full graph and a replay reads memory, not Python.
+        """
+        cache = self._hc_fn_pad_cache
+        if not cache:
+            return
+        for key, entry in list(cache.items()):
+            source = entry[0]()
+            if source is None:
+                del cache[key]
+                continue
+            _, dim, pad = key
+            entry[1].copy_(self._pad_hc_fn(source, dim, pad))
+            entry[2] = source.data_ptr()
 
     def hc_pre(self, x, hc_fn, hc_scale, hc_base, pre_mix=None):
         align = self.hc_pre_width_alignment
@@ -1882,6 +1914,19 @@ class AscendDeepseekV41LLMForCausalLM(nn.Module, DeepseekV41MixtureOfExperts, Su
             marker in name for marker in cls._DEFERRED_WEIGHT_MARKERS
         )
 
+    def reset_weight_dependent_caches(self) -> None:
+        """Invalidate state derived from weight values rather than identity.
+
+        Every supported reload path writes into the existing Parameter storage
+        (``param.data.copy_`` while loading, ``get_parameter(name).copy_`` on
+        sleep/wake, and the RL weight-transfer engine), so caches keyed on tensor
+        identity stay valid while their contents go stale.
+        """
+        for module in self.modules():
+            reset = getattr(module, "reset_hc_pre_cache", None)
+            if reset is not None:
+                reset()
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         if not self.model.has_engram:
             return self._load_model_weights((name, tensor) for name, tensor in weights if ".engram." not in name)
@@ -2168,6 +2213,7 @@ class AscendDeepseekV41LLMForCausalLM(nn.Module, DeepseekV41MixtureOfExperts, Su
             if not is_fusion_moe_shared_experts_layer:
                 loaded_params.add(name)
 
+        self.reset_weight_dependent_caches()
         return loaded_params
 
     @property

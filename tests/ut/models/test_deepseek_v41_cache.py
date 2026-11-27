@@ -747,6 +747,39 @@ def test_index_cache_layout_follows_one_contract(monkeypatch, device_type, contr
     assert spec.scale_dtype is scale_dtype
 
 
+def test_in_place_weight_reload_refills_the_padded_hc_fn_buffer():
+    """Reloads keep the Parameter object, so the padded buffer is refilled in place.
+
+    ``param.data.copy_`` writes every value without moving ``_version`` or
+    ``data_ptr``; loaders and sleep/wake restores therefore call
+    ``reset_hc_pre_cache``. The buffer itself is kept because its address is an
+    input of the captured full graph, and a replay reads memory, not Python.
+    """
+    from vllm_ascend.models.deepseek_v41.model import DeepseekV41DecoderLayer
+
+    layer = object.__new__(DeepseekV41DecoderLayer)
+    layer.hc_mult = 4
+    layer._hc_fn_pad_cache = None
+    hc_fn = torch.zeros(2, 4 * 4)
+    first = layer._padded_hc_fn(hc_fn, 4, 2)
+    assert layer._padded_hc_fn(hc_fn, 4, 2) is first
+
+    with torch.no_grad():
+        hc_fn.data.copy_(torch.ones_like(hc_fn))
+    layer.reset_hc_pre_cache()
+    second = layer._padded_hc_fn(hc_fn, 4, 2)
+    assert second is first, "the captured buffer address must stay stable"
+    padded = second.view(2, 4, 6)
+    torch.testing.assert_close(padded[:, :, :4], torch.ones(2, 4, 4))
+    torch.testing.assert_close(padded[:, :, 4:], torch.zeros(2, 4, 2))
+
+    # Replacing the storage keeps the same buffer too.
+    hc_fn.data = torch.full((2, 4 * 4), 2.0)
+    third = layer._padded_hc_fn(hc_fn, 4, 2)
+    assert third is first
+    torch.testing.assert_close(third.view(2, 4, 6)[:, :, :4], torch.full((2, 4, 4), 2.0))
+
+
 def test_candidate_blocks_pin_partial_tail_and_drop_unreachable_blocks():
     scores = torch.tensor([[9.0, 8.0, 7.0, 6.0, 5.0, 4.0, -torch.inf, -torch.inf]])
     # With two candidate blocks, the best old block and the partially filled
