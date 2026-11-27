@@ -528,6 +528,8 @@ class NPUWorker(WorkerBase):
         device = torch.device(f"{current_platform.device_type}:{visible_device_index}")
 
         torch.npu.set_device(device)
+        # The A6 profile disables the operator early-start window to keep
+        # per-operator timings clean; the profile is the only switch.
         if get_current_hardware_profile().supports(HardwareCapability.DISABLE_OP_EARLY_START):
             torch.npu.set_op_early_start(0)
 

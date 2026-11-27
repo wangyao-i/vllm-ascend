@@ -11,7 +11,10 @@ def _decode_e8m0(scale):
     # and 255 is NaN (not FP32 infinity).
     # Ascend byte loads can sign-extend values >= 128 during widening.
     exponent = scale.to(tl.int32) & 0xFF
-    bits = exponent << 23
+    # A6's bishengir cannot select a vector-shift intrinsic for ``<< 23``. For
+    # the non-negative exponent this multiply is bit-identical, and 255 * 2**23
+    # stays below INT32_MAX, so the exponent field cannot overflow.
+    bits = exponent * 8388608
     bits = tl.where(exponent == 0, 0x00400000, bits)
     bits = tl.where(exponent == 255, 0x7FC00000, bits)
     return bits.to(tl.float32, bitcast=True)

@@ -27,10 +27,12 @@ _STANDARD_CAPABILITIES = frozenset(
         HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
         HardwareCapability.ATB_EXTENSIONS,
         HardwareCapability.ATB_WARMUP,
+        HardwareCapability.ADD_RMS_NORM_BIAS_OP,
         HardwareCapability.BGMV_SGMV_META_REGISTRATION,
         HardwareCapability.FLA_GDN_PREFILL,
         HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
         HardwareCapability.FUSED_SWIGLU_TUNING_ARGS,
+        HardwareCapability.FOREACH_ADD_V2,
         HardwareCapability.GRAPH_MM_REDUCE_SCATTER_FUSION,
         HardwareCapability.GRAPH_MULS_ADD_FUSION,
         HardwareCapability.GRAPH_NORM_QUANT_FUSION,
@@ -65,6 +67,42 @@ def test_a6_uses_unfused_matmul_reduce_scatter_and_disables_op_early_start():
 
 def test_a6_enables_fused_qkv_rmsnorm_mrope():
     assert get_hardware_profile(AscendDeviceType.A6).supports(HardwareCapability.SPLIT_QKV_RMSNORM_MROPE)
+
+
+def test_a6_runs_the_standard_cache_abi():
+    a6 = get_hardware_profile(AscendDeviceType.A6)
+    a5 = get_hardware_profile(AscendDeviceType.A5)
+
+    # A6 registers neither the A5 packed-cache operators nor the SK cache-store
+    # kernel, so DeepSeek-V4.1 keeps the standard cache layout there.
+    assert not a6.supports(HardwareCapability.DSV41_PACKED_CACHE)
+    assert not a6.supports(HardwareCapability.SCATTER_ND_CACHE_STORE)
+    assert a5.supports(HardwareCapability.DSV41_PACKED_CACHE)
+    assert a5.supports(HardwareCapability.SCATTER_ND_CACHE_STORE)
+
+
+def test_a6_metadata_and_hc_pre_abi():
+    a6 = get_hardware_profile(AscendDeviceType.A6)
+    a5 = get_hardware_profile(AscendDeviceType.A5)
+
+    # CANN 9.3's packaged SparseFlashMla metadata takes 2048 int32 elements, and
+    # arch35's HcPre kernel only returns on a 4096-column multiple.
+    assert a6.smla_metadata_size == 2048
+    assert a6.hc_pre_width_alignment == 4096
+    assert a5.smla_metadata_size == 1024
+    assert a5.hc_pre_width_alignment == 1
+
+
+def test_a6_replaces_the_triton_engram_gate():
+    a5 = get_hardware_profile(AscendDeviceType.A5)
+    a6 = get_hardware_profile(AscendDeviceType.A6)
+
+    # The fused contract stays available on A6, but the Triton kernel cannot be
+    # compiled there and the PyTorch fallback implements it.
+    assert a5.supports(HardwareCapability.ENGRAM_UNROTATED_GATE)
+    assert a5.supports(HardwareCapability.ENGRAM_TRITON_GATE)
+    assert a6.supports(HardwareCapability.ENGRAM_UNROTATED_GATE)
+    assert not a6.supports(HardwareCapability.ENGRAM_TRITON_GATE)
 
 
 _EXPECTED_CAPABILITIES = {
@@ -112,10 +150,12 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.DSV4_COMPRESSED_CACHE,
             HardwareCapability.DSV41_PACKED_CACHE,
             HardwareCapability.ENGRAM_UNROTATED_GATE,
+            HardwareCapability.ENGRAM_TRITON_GATE,
             HardwareCapability.ENGRAM_MXFP8,
             HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
             HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
             HardwareCapability.FLA_GDN_PREFILL,
+            HardwareCapability.FOREACH_ADD_V2,
             HardwareCapability.FP8_ATTENTION,
             HardwareCapability.POOL_KEY_INDEXER_FP8,
             HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
@@ -134,6 +174,44 @@ _EXPECTED_CAPABILITIES = {
             HardwareCapability.NPUGRAPH_EX,
             HardwareCapability.NPU_TOP_K_TOP_P,
             HardwareCapability.RUNTIME_CUSTOM_OPS,
+            HardwareCapability.STANDARD_MAMBA_PATCH,
+            HardwareCapability.STANDARD_WORKER_PATCHES,
+            HardwareCapability.SWIGLU_OAI_MX_QUANT,
+            HardwareCapability.TRITON_BATCH_MEMCPY,
+            HardwareCapability.UNRESTRICTED_MLAPO,
+        }
+    ),
+    AscendDeviceType.A6: frozenset(
+        {
+            HardwareCapability.AUTO_ENABLE_CUSTOM_OPS,
+            HardwareCapability.CANN_MEGAMOE,
+            HardwareCapability.CANN_MEGAMOE_MXFP,
+            HardwareCapability.CHUNKED_PREFILL_PHASE_SPLIT,
+            HardwareCapability.CLUSTER_CPU_TOPOLOGY,
+            HardwareCapability.DEVICE_LENGTH_FLASH_ATTN,
+            HardwareCapability.DISABLE_OP_EARLY_START,
+            HardwareCapability.DSA_C128_STATE_SMALL_BLOCK_SIZES,
+            HardwareCapability.DSV4_COMPRESSED_CACHE,
+            HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
+            HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
+            HardwareCapability.ENGRAM_MXFP8,
+            HardwareCapability.ENGRAM_UNROTATED_GATE,
+            HardwareCapability.FP8_ATTENTION,
+            HardwareCapability.FUSED_ROTARY_MUL_INTERLEAVE,
+            HardwareCapability.GRAPH_NORM_QUANT_FUSION,
+            HardwareCapability.LOCAL_KV_COMM_RESOURCE,
+            HardwareCapability.LORA_CUSTOM_OPS,
+            HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
+            HardwareCapability.MLAPO_NATIVE_WEIGHTS,
+            HardwareCapability.MLA_FLASH,
+            HardwareCapability.MM_REDUCE_SCATTER_AI_CPU_INFERENCE,
+            HardwareCapability.MOE_DISPATCH_EXTRA_ARGS,
+            HardwareCapability.MOE_DISPATCH_SHARED_EXPERT_ARGS,
+            HardwareCapability.MOE_GATING_TOP_K_HASH_VISION,
+            HardwareCapability.NPUGRAPH_EX,
+            HardwareCapability.POOL_KEY_INDEXER_FP8,
+            HardwareCapability.RUNTIME_CUSTOM_OPS,
+            HardwareCapability.SPLIT_QKV_RMSNORM_MROPE,
             HardwareCapability.STANDARD_MAMBA_PATCH,
             HardwareCapability.STANDARD_WORKER_PATCHES,
             HardwareCapability.SWIGLU_OAI_MX_QUANT,
@@ -199,6 +277,17 @@ _EXPECTED_CAPABILITIES = {
             DeviceAddressingMode.DIRECT,
             WeightLayoutPolicy.CONFIGURABLE,
             MoECommPolicy.CAPACITY_AND_WORLD_SIZE,
+            QuantizationBackendFamily.STANDARD,
+        ),
+        (
+            AscendDeviceType.A6,
+            AttentionBackendFamily.STANDARD,
+            CPUBindingMode.TOPO_AFFINITY,
+            "vllm_ascend.worker.worker.NPUWorker",
+            DeviceAdaptorFamily.A6,
+            DeviceAddressingMode.DIRECT,
+            WeightLayoutPolicy.CONFIGURABLE,
+            MoECommPolicy.CAPACITY_AND_EXPERT_DENSITY,
             QuantizationBackendFamily.STANDARD,
         ),
     ],

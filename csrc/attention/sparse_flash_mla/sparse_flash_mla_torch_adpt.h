@@ -22,6 +22,10 @@ constexpr int64_t DIM_2 = 2;
 constexpr int64_t DIM_3 = 3;
 constexpr int64_t DIM_4 = 4;
 
+// Default number of int32 elements aclnnSparseFlashMlaMetadata writes. The
+// packaged operator ABI fixes this size: CANN 9.2 (A5) accepts 1024 and CANN
+// 9.3 (A6) accepts 2048, so callers pass their platform's size explicitly and
+// keep the output shape in sync with the Python-side metadata buffer.
 constexpr int64_t SMLA_METADATA_SIZE = 1024;
 
 inline at::Tensor GetValidSparseFlashMlaTensor(
@@ -40,7 +44,7 @@ at::Tensor npu_sparse_flash_mla_metadata(
     const c10::optional<at::Tensor> &oriTopkLength, const c10::optional<at::Tensor> &cmpTopkLength, int64_t batchSize,
     int64_t maxSeqlenQ, int64_t maxSeqlenOriKv, int64_t maxSeqlenCmpKv, int64_t oriTopk, int64_t cmpTopk,
     int64_t cmpRatio, int64_t oriMaskMode, int64_t cmpMaskMode, int64_t oriWinLeft, int64_t oriWinRight,
-    c10::string_view layoutQ, c10::string_view layoutKv, bool hasOriKv, bool hasCmpKv)
+    c10::string_view layoutQ, c10::string_view layoutKv, bool hasOriKv, bool hasCmpKv, int64_t metadataSize)
 {
     at::Device outputDevice = at::Device(std::string("npu"));
     if (cuSeqlensQ.has_value()) {
@@ -63,7 +67,8 @@ at::Tensor npu_sparse_flash_mla_metadata(
         outputDevice = cmpTopkLength.value().device();
     }
 
-    at::Tensor output = torch::empty({SMLA_METADATA_SIZE}, torch::dtype(torch::kInt32).device(outputDevice));
+    at::Tensor output = torch::empty({metadataSize > 0 ? metadataSize : SMLA_METADATA_SIZE},
+                                     torch::dtype(torch::kInt32).device(outputDevice));
     auto cuSeqlensQVal = GetValidSparseFlashMlaTensor(cuSeqlensQ, outputDevice);
     auto cuSeqlensOriKvVal = GetValidSparseFlashMlaTensor(cuSeqlensOriKv, outputDevice);
     auto cuSeqlensCmpKvVal = GetValidSparseFlashMlaTensor(cuSeqlensCmpKv, outputDevice);

@@ -46,6 +46,9 @@ from vllm_ascend.core.kv_cache_interface import (
     declared_kwarg,
     get_storage_block_size,
 )
+from vllm_ascend.device.hardware import AscendDeviceType
+from vllm_ascend.device.hardware_profile import get_hardware_profile
+from vllm_ascend.models.deepseek_v41 import cache_config as v41_cache_config
 from vllm_ascend.models.deepseek_v41.cache_config import (
     get_deepseek_v41_kv_cache_config,
     get_deepseek_v41_pool_bytes_per_block,
@@ -692,6 +695,56 @@ def test_compression_slot_mapping():
     slots = torch.tensor([-1, 0, 1, 62, 63, 320, 321, 383])
     assert compressed_slot_mapping(slots, 2).tolist() == [-1, -1, 0, -1, 31, -1, 160, 191]
     assert torch.equal(compressed_slot_mapping(slots, 1), slots)
+
+
+def test_scatter_cache_sk_uses_the_stride_aware_writer_without_the_sk_kernel(monkeypatch):
+    """A stack without the SK kernel keeps the packed page stride."""
+    calls = []
+    monkeypatch.setattr(dsa_v41, "_sk_cache_store_supported", lambda: False)
+    monkeypatch.setattr(dsa_v41, "write_dsa_cache", lambda cache, updates, slots: calls.append((cache, updates, slots)))
+
+    backing = torch.zeros(3 * 128, dtype=torch.float32)
+    cache = torch.as_strided(backing, size=(3, 4, 1, 2), stride=(32, 2, 2, 1))
+    values = torch.tensor([[9.0, 9.0], [7.0, 8.0]])
+    indices = torch.tensor([[-1, -1], [1, 3]], dtype=torch.int32)
+
+    scatter_cache_sk(cache, indices, values)
+
+    stored, updates, slots = calls[0]
+    # The 4-D plane is what carries the page stride; squeezing it here would
+    # make the writer address the wrong rows.
+    assert stored.shape == (3, 4, 1, 2)
+    assert stored.stride() == (32, 2, 2, 1)
+    torch.testing.assert_close(updates, values)
+    torch.testing.assert_close(slots, indices)
+
+
+@pytest.mark.parametrize(
+    "device_type,contract,dtype,scale_dtype",
+    [
+        (AscendDeviceType.A6, True, torch.float8_e4m3fn, torch.float32),
+        (AscendDeviceType.A3, False, torch.int8, torch.float16),
+        (AscendDeviceType.A2, False, torch.int8, torch.float16),
+        # The packed A5 ABI has its own layout and keeps the contract off.
+        (AscendDeviceType.A5, False, torch.uint8, torch.uint8),
+    ],
+)
+def test_index_cache_layout_follows_one_contract(monkeypatch, device_type, contract, dtype, scale_dtype):
+    """The cache plane and the indexer write path must make the same choice.
+
+    Both ask ``indexer_fp8_cache_contract``; a divergence would convert values
+    numerically instead of copying bytes and only show up as accuracy drift.
+    """
+    monkeypatch.setattr(
+        v41_cache_config,
+        "get_current_hardware_profile",
+        lambda: get_hardware_profile(device_type),
+    )
+
+    assert v41_cache_config.indexer_fp8_cache_contract() is contract
+    spec = v41_cache_config.make_index_cache_spec(block_size=128, head_size=128, compress_ratio=2)
+    assert spec.dtype is dtype
+    assert spec.scale_dtype is scale_dtype
 
 
 def test_candidate_blocks_pin_partial_tail_and_drop_unreachable_blocks():
@@ -1627,3 +1680,52 @@ def test_swa_cache_uses_configured_block_size(block_size, monkeypatch):
 
     assert cache.block_size == block_size
     assert cache.get_kv_cache_spec(None).block_size == block_size
+
+
+def test_reserved_null_page_slots_are_skipped():
+    """Compressed slots inside reserved block 0 must never reach the cache.
+
+    ``storage_block_size`` counts compressed rows per scheduler block, so the
+    null page owns ``[0, storage_block_size)`` and the first slot of the next
+    block stays writable.
+    """
+    slots = torch.tensor([-1, 0, 31, 32, 100], dtype=torch.int64)
+
+    assert dsa_v41._skip_null_page_slots(slots, 32).tolist() == [-1, -1, -1, 32, 100]
+
+
+def test_compressed_slot_coordinates_skip_the_reserved_page():
+    """The builder wiring, not just the helper, must drop the null page.
+
+    Two complete compression groups in a ratio-2 plane with a storage block of
+    4 rows: original slot 7 completes compressed slot 3 (last row of the
+    reserved page) and slot 9 completes compressed slot 4 (first row of block
+    1). Masks written as ``storage_block_size // compress_ratio`` would keep
+    slot 3 and still address block 0.
+    """
+    builder = SimpleNamespace(
+        _uses_a5_packed_cache=False,
+        _device_backend=None,
+        _slot_mapping_2d=torch.full((2, 2), -1, dtype=torch.int32),
+        _flat_slot_mapping=torch.full((2,), -1, dtype=torch.int64),
+        common_v41_metadata={},
+    )
+    request = SimpleNamespace(
+        cache_kind="long_kv",
+        compress_ratio=2,
+        storage_block_size=4,
+        is_compressor_state=False,
+        num_input_tokens=2,
+        num_actual_reqs=1,
+        num_actual_tokens=2,
+        positions=torch.tensor([1, 1]),
+    )
+    common = SimpleNamespace(
+        slot_mapping=torch.tensor([7, 9]),
+        query_start_loc=torch.tensor([0, 2], dtype=torch.int32),
+    )
+
+    AscendDSAV41MetadataBuilder._build_cache_slots(builder, common, request)
+
+    assert request.slot_mapping.tolist() == [[-1, -1], [1, 0]]
+    assert request.flat_slot_mapping.tolist() == [-1, 4]
