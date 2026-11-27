@@ -8,7 +8,6 @@ before running the compressor, indexer and sparse-attention operators without
 moving cache or scheduler knowledge back into the model.
 """
 
-import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -20,6 +19,7 @@ from torch import nn
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
+from vllm.logger import logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.backend import (
@@ -58,8 +58,6 @@ from vllm_ascend.worker.device_metadata import (
 )
 
 V41_METADATA_BUFFER_SIZE = 1024
-
-logger = logging.getLogger(__name__)
 
 
 @eager_break_during_capture
@@ -1038,13 +1036,14 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         was_enabled = self._device_metadata_enabled
         was_in_graph = self._device_metadata_in_graph
         if in_graph and not self._uses_a5_packed_cache:
-            # Only the A5 packed-cache backend has validated captured producers.
-            # Keep the capture attempt possible for evaluation instead of failing
-            # the whole warmup, but say so loudly: the standard backend has only
-            # been exercised with eager metadata so far.
-            logger.warning(
-                "Capturing V4.1 device metadata without the A5 packed-cache backend is experimental; "
-                "validate the capture before relying on it."
+            # The A5 packed backend is the validated capture path. The standard
+            # backend is A6's normal decode path (Model Runner V2 runs the full
+            # graph, so every step builds metadata in-graph); the capture is
+            # therefore allowed and only its replay correctness still needs
+            # on-card validation. Log once: this runs per cache group per step.
+            logger.warning_once(
+                "V4.1 device metadata is captured without the A5 packed-cache backend; this is the "
+                "normal A6 path, and its replay correctness has not been validated on hardware yet."
             )
         self.enable_device_metadata()
         self._device_metadata_in_graph = in_graph
