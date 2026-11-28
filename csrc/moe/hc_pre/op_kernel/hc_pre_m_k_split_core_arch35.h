@@ -68,6 +68,9 @@ public:
     __aicore__ inline void Process()
     {
         int64_t curBlockIdx = GetBlockIdx();
+        // One AIC drives GetSubBlockNum() AIVs: 2 on a 1:2 part (A5),
+        // 1 on A6's 1:1 part. Never assume 2 - that halves A6's rows.
+        const int64_t subBlockNum = GetSubBlockNum();
         int64_t totalBlockNum = GetBlockNum();
 
         uint64_t mBlkDimIdx = curBlockIdx / tilingData->cubeBlockDimK;
@@ -83,16 +86,16 @@ public:
         if ASCEND_IS_AIC {
             mGmOffset = (curBlockIdx / tilingData->cubeBlockDimK) * singleCoreMaxRound * tilingData->mL1Size;
         } else {
-            mGmOffset = ((curBlockIdx / 2) / tilingData->cubeBlockDimK) * singleCoreMaxRound * tilingData->mL1Size;
+            mGmOffset = ((curBlockIdx / subBlockNum) / tilingData->cubeBlockDimK) * singleCoreMaxRound * tilingData->mL1Size;
         }
         int64_t xGmBaseOffset = 0;
         int64_t rmsGmBaseOffset = 0;
         if ASCEND_IS_AIV {
             int64_t aivCurBlockIdx = GetBlockIdx();
-            xGmBaseOffset = ((aivCurBlockIdx / 2) / tilingData->cubeBlockDimK) * singleCoreMaxRound *
+            xGmBaseOffset = ((aivCurBlockIdx / subBlockNum) / tilingData->cubeBlockDimK) * singleCoreMaxRound *
                             tilingData->mL1Size * tilingData->hcMult * tilingData->d +
-                            ((aivCurBlockIdx / 2) % tilingData->cubeBlockDimK) * tilingData->multCoreSplitKSize;
-            rmsGmBaseOffset = ((aivCurBlockIdx / 2) / tilingData->cubeBlockDimK) * singleCoreMaxRound * tilingData->mL1Size;
+                            ((aivCurBlockIdx / subBlockNum) % tilingData->cubeBlockDimK) * tilingData->multCoreSplitKSize;
+            rmsGmBaseOffset = ((aivCurBlockIdx / subBlockNum) / tilingData->cubeBlockDimK) * singleCoreMaxRound * tilingData->mL1Size;
         }
 
         // todo 移到tiling计算
@@ -104,7 +107,7 @@ public:
         if ASCEND_IS_AIC {
             curAicBlockIdx = curBlockIdx;
         } else {
-            curAicBlockIdx = curBlockIdx / 2;
+            curAicBlockIdx = curBlockIdx / subBlockNum;
         }
 
         if (curAicBlockIdx < tilingData->cubeBlockDimK * tilingData->cubeBlockDimM) {
@@ -119,9 +122,9 @@ public:
                 uint64_t kGmEndOffset = AscendC::Std::min(tilingData->multCoreSplitKSize,
                     tilingData->k -  (curAicBlockIdx % tilingData->cubeBlockDimK) * tilingData->multCoreSplitKSize);
                 if ASCEND_IS_AIV {
-                    if (GetBlockIdx() % 2 != 0) {
-                        xSplitOffset = (mL1RealSize / 2) * tilingData->hcMult * tilingData->d;
-                        rmsSplitOffset = mL1RealSize / 2;
+                    if (GetSubBlockIdx() != 0) {
+                        xSplitOffset = (mL1RealSize / static_cast<uint64_t>(subBlockNum)) * tilingData->hcMult * tilingData->d;
+                        rmsSplitOffset = mL1RealSize / static_cast<uint64_t>(subBlockNum);
                     }
                     rmsNormLocal = rmsQue.template AllocTensor<float>();
                 }
@@ -153,11 +156,11 @@ public:
                         CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
                     } else {
                         CrossCoreWaitFlag<SYNC_MODE4, PIPE_MTE3>(SYNC_AIC_AIV_FLAG);
-                        int64_t rowFactor = mL1RealSize / 2;
+                        int64_t rowFactor = mL1RealSize / static_cast<uint64_t>(subBlockNum);
                         int64_t tailRowFactor = mL1RealSize - rowFactor;
                         curRowFactor = rowFactor;
                         int64_t mL1SizeAlign = CeilAlign(mL1RealSize, AscendC::BLOCK_CUBE);
-                        if (curBlockIdx % 2 == 1) {
+                        if (GetSubBlockIdx() != 0) {
                             curRowFactor = tailRowFactor;
                         }
                         uint64_t cvLoopKSize = CeilDiv(kL1RealSize, tilingData->kUbSize);
@@ -182,7 +185,7 @@ public:
                             SetFlag<HardEvent::V_MTE3>(static_cast<event_t>(bufferIdx & 1));
                             WaitFlag<HardEvent::V_MTE3>(static_cast<event_t>(bufferIdx & 1));
 
-                            if (curBlockIdx % 2 == 0) {
+                            if (GetSubBlockIdx() == 0) {
                                 DataCopyParams dataCopyXParams;
                                 dataCopyXParams.blockCount = CeilDiv(kRealSize, C0_SIZE);
                                 dataCopyXParams.blockLen = curRowFactor * C0_SIZE * sizeof(float) / BLOCK_SIZE;
@@ -205,7 +208,7 @@ public:
                     aL1BufferID_ ^= 1;
                 }
                 if ASCEND_IS_AIV {
-                    int64_t kBaseOffset = (GetBlockIdx() / 2) % tilingData->kBlockFactor * tilingData->bs;
+                    int64_t kBaseOffset = (GetBlockIdx() / subBlockNum) % tilingData->kBlockFactor * tilingData->bs;
                     rmsQue.template EnQue(rmsNormLocal);
                     rmsNormLocal = rmsQue.template DeQue<float>();
                     CopyOut(rmsNormLocal, rmsGm[kBaseOffset + rmsGmBaseOffset + rmsSplitOffset + roundIdx * tilingData->mL1Size], 1, curRowFactor);
