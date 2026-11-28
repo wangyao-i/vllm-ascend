@@ -172,6 +172,41 @@ def test_v41_rms_norm_cast_preserves_rounded_routing_input(dtype):
     norm.assert_not_called()
 
 
+def test_v41_padded_hc_fn_compensates_the_wider_rms_denominator():
+    """Padding widens the kernel's RMS denominator, so the weight is pre-scaled.
+
+    ``hc_mixes_reference`` divides by the flattened width of the input it is
+    given, which is what the arch35 kernel does. Padding the input therefore
+    makes ``rstd`` sqrt((dim + pad) / dim) too large; ``_pad_hc_fn`` folds the
+    reciprocal into the padded weight so the pre/post/comb coefficients match
+    the unpadded run.
+    """
+    layer = _layer()
+    layer.hc_scale = torch.randn(3)
+    layer.hc_base = torch.randn(24)
+    dim, pad = 8, 3
+    x = torch.randn(2, 4, dim, dtype=torch.bfloat16)
+    hc_fn = torch.randn(24, 4 * dim, dtype=torch.float32)
+
+    expected = hc_mixes_reference(layer, x, hc_fn, layer.hc_scale, layer.hc_base)
+    padded_weight = layer._pad_hc_fn(hc_fn, dim, pad)
+    actual = hc_mixes_reference(
+        layer, torch.nn.functional.pad(x, (0, pad)), padded_weight, layer.hc_scale, layer.hc_base
+    )
+    for got, want in zip(actual, expected):
+        torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-3)
+
+    # Without the compensation the coefficients drift by the rstd ratio.
+    naive = hc_mixes_reference(
+        layer,
+        torch.nn.functional.pad(x, (0, pad)),
+        torch.nn.functional.pad(hc_fn.view(24, 4, dim), (0, pad)).reshape(24, 4 * (dim + pad)),
+        layer.hc_scale,
+        layer.hc_base,
+    )
+    assert (naive[0] - expected[0]).abs().max() > 1e-3
+
+
 def test_v41_hc_reference_supports_hidden_size_5120():
     torch.manual_seed(7)
     layer = _layer()

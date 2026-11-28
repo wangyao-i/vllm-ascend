@@ -885,7 +885,15 @@ class DeepseekV41DecoderLayer(nn.Module):
         rows = hc_fn.shape[0]
         # ``detach`` keeps the padded copy out of the autograd graph, so it never
         # pins the weight it was derived from.
-        return F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad)).reshape(rows, self.hc_mult * (dim + pad))
+        padded = F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad))
+        # arch35's inv-RMS divides the squared sum by ``hc_mult * d`` with ``d``
+        # taken from the *padded* width, so padding widens the mean and makes
+        # ``rstd`` sqrt((dim + pad) / dim) too large. ``y`` and the pre/post/comb
+        # logits are both proportional to (hc_fn @ x) * rstd, so folding the
+        # reciprocal into the padded weight restores them; ``base``, ``scale``
+        # and ``pre_mix`` are additive and must stay unscaled.
+        padded = padded * ((dim / (dim + pad)) ** 0.5)
+        return padded.reshape(rows, self.hc_mult * (dim + pad))
 
     def _padded_hc_fn(self, hc_fn, dim, pad):
         """Return ``hc_fn`` with every ``dim``-wide branch block zero-padded."""
@@ -937,9 +945,9 @@ class DeepseekV41DecoderLayer(nn.Module):
         align = self.hc_pre_width_alignment
         pad = (-x.shape[-1]) % align if align > 1 else 0
         if pad:
-            # Zero columns add nothing to the RMS term or the dot product, so
-            # the result up to the original width matches the unpadded kernel
-            # without changing any weight or cache layout.
+            # The padded width changes the kernel's RMS denominator, so the
+            # padded weight is pre-scaled to compensate (see ``_pad_hc_fn``);
+            # ``hc_fn`` itself, the cache layout and the weights stay untouched.
             dim = x.shape[-1]
             x_padded = F.pad(x, (0, pad))
             y, post, comb_frag, pre = torch.ops._C_ascend.npu_hc_pre_v3(
