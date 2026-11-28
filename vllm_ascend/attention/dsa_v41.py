@@ -10,6 +10,7 @@ moving cache or scheduler knowledge back into the model.
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 import torch
@@ -18,6 +19,7 @@ from torch import nn
 from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
+from vllm.logger import logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.torch_utils import direct_register_custom_op
 from vllm.v1.attention.backend import (
@@ -29,6 +31,7 @@ from vllm.v1.attention.backend import (
 from vllm.v1.kv_cache_interface import CircularBufferSpec
 
 from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.attention.dsa_attn_kv_plan import write_dsa_cache
 from vllm_ascend.attention.dsa_v1 import build_dspark_swa_indices, dsv4_dsa_overlap_stream
 from vllm_ascend.core.kv_cache_interface import (
     AscendMLAAttentionSpec,
@@ -37,6 +40,7 @@ from vllm_ascend.core.kv_cache_interface import (
     get_storage_block_size,
 )
 from vllm_ascend.device.device_op import DeviceOperator
+from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.rope_dsv4 import (
     get_cos_and_sin_dsa,
     get_full_cos_and_sin_dsa_for_layer,
@@ -274,6 +278,20 @@ class DeepseekV41PreparedIndexer:
     quantize_done: Any = None
 
 
+def _skip_null_page_slots(slots: torch.Tensor, storage_block_size: int) -> torch.Tensor:
+    """Replace compressed slots that land in physical block 0 with the skip marker.
+
+    ``storage_block_size`` is the number of compressed rows one scheduler block
+    stores (not the unbounded token count), so physical block 0 — the page the
+    scheduler reserves as its null page — owns compressed slots
+    ``[0, storage_block_size)``. Dummy or padded rows can still complete a
+    compression group inside that page, and a rank reading it returns NaN rows
+    from the first sparse-attention layer, so those writes must be dropped with
+    the same ``-1`` sentinel the KV scatter already uses.
+    """
+    return slots.masked_fill((slots >= 0) & (slots < storage_block_size), -1)
+
+
 def compressed_slot_mapping(slot_mapping: torch.Tensor, ratio: int) -> torch.Tensor:
     """Convert original-token physical slots to completed compressed slots.
 
@@ -306,22 +324,47 @@ def _request_counts(common: Any, num_reqs: int):
     return num_decodes, num_decode_tokens, num_prefills, num_prefill_tokens
 
 
+@lru_cache(maxsize=1)
+def _sk_cache_store_supported() -> bool:
+    """Whether the custom ``npu_scatter_nd_update_sk`` store applies here.
+
+    The kernel library is built for one SoC family, so a stack without the
+    contract has no kernel for it and the call fails instead of falling back.
+    """
+    return get_current_hardware_profile().supports(HardwareCapability.SCATTER_ND_CACHE_STORE)
+
+
+# Cache dtypes whose rows are raw bytes. Both stores below copy them unchanged,
+# and aclnnScatterNdUpdateSk has no DT_UINT8 build.
+_BYTE_CACHE_DTYPES = (torch.uint8, torch.float8_e4m3fn, torch.float8_e5m2)
+
+
 def scatter_cache_sk(
     cache: torch.Tensor,
     slot_mapping: torch.Tensor,
     values: torch.Tensor,
 ) -> None:
-    """Store rows using builder-prepared coordinates and V4's Ascend op.
+    """Store rows using builder-prepared coordinates.
 
     V4.1 cache planes can be views into a larger layer-outermost slot, so the
     physical page stride is not necessarily the contiguous stride implied by
-    the plane shape. ``npu_scatter_nd_update_sk`` preserves that stride and
-    treats the builder's ``[-1, -1]`` coordinates as skipped rows, matching V4.
+    the plane shape. Both stores below preserve that stride and treat the
+    builder's ``[-1, -1]`` coordinates as skipped rows, matching V4.
     """
-    cache = cache.squeeze(-2)
     indices = slot_mapping[: values.shape[0]]
     updates = values.to(cache.dtype).contiguous()
-    torch.ops._C_ascend.npu_scatter_nd_update_sk(cache, indices, updates)
+    store = cache
+    if cache.dtype in _BYTE_CACHE_DTYPES:
+        store = cache.view(torch.int8)
+        updates = updates.view(torch.int8)
+    if not _sk_cache_store_supported():
+        # No SK kernel on this stack: use the stride-aware Triton writer that
+        # the DeepSeek-V4 cache path already runs here. A generic ACLNN
+        # scatter cannot express the packed page stride, and the PTA
+        # ScatterNdUpdate path stalls the main thread in V4.1 decode.
+        write_dsa_cache(store, updates, indices)
+        return
+    torch.ops._C_ascend.npu_scatter_nd_update_sk(store.squeeze(-2), indices, updates)
 
 
 def pad_sparse_indices(indices: torch.Tensor, topk: int) -> torch.Tensor:
@@ -713,7 +756,10 @@ class AscendDSAV41Impl:
                 softmax_scale=attn.softmax_scale,
             )
         has_compressed = self.role.compress_ratio in (1, 2)
-        ratio = self.role.compress_ratio if has_compressed else 0
+        # SparseFlashMla only accepts cmp_ratio in [1, 128], where 1 means "no
+        # compression". A SWA-only layer used to pass 0, which the delivered
+        # operator rejects; V4 floors the value the same way.
+        ratio = self.role.compress_ratio if has_compressed else 1
         num_reqs = metadata.swa.num_reqs
         query_start_loc = metadata.swa.query_start_loc[: num_reqs + 1]
         seq_lens = metadata.swa.seq_lens[:num_reqs]
@@ -882,6 +928,17 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
                 f"({spec_window}) while the mask floors on the text config's ({window_size})."
             )
         query_metadata_size = V41_METADATA_BUFFER_SIZE if build_query_metadata else 0
+        # The packed A5 backend fills the QLI-shaped 1024-int32 buffer; the
+        # in-tree SparseFlashMla metadata operator instead writes a fixed number
+        # of int32 elements that the packaged operator ABI decides: CANN 9.2
+        # (A5) accepts 1024 and CANN 9.3 (A6) accepts 2048. The hardware profile
+        # carries that fact and is the only source; reading it here keeps a
+        # profile override live instead of frozen at import.
+        smla_metadata_size = 0
+        if build_query_metadata:
+            smla_metadata_size = (
+                query_metadata_size if self._uses_a5_packed_cache else get_current_hardware_profile().smla_metadata_size
+            )
         compressor_tokens = max_tokens if build_compressor_metadata else 0
         compressor_reqs = max_reqs if build_compressor_metadata else 0
         self._slot_mapping = torch.full((max_tokens,), -1, dtype=torch.int64, device=device)
@@ -893,7 +950,7 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         self._dspark_swa_lengths = None
         self._cache_seq_lens = torch.zeros(max_reqs, dtype=torch.int32, device=device)
         self._cmp_residual = torch.zeros(max_reqs, dtype=torch.int32, device=device)
-        self._smla_metadata = torch.zeros(query_metadata_size, dtype=torch.int32, device=device)
+        self._smla_metadata = torch.zeros(smla_metadata_size, dtype=torch.int32, device=device)
         self._qli_metadata = torch.zeros(query_metadata_size, dtype=torch.int32, device=device)
         if self._supports_device_ops and self._uses_a5_packed_cache and self._cache_kind == "swa":
             self._a5_causal_swa_indices = torch.empty((max_tokens, 1, window_size), dtype=torch.int32, device=device)
@@ -979,7 +1036,15 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         was_enabled = self._device_metadata_enabled
         was_in_graph = self._device_metadata_in_graph
         if in_graph and not self._uses_a5_packed_cache:
-            raise ValueError("Captured V4.1 device metadata currently requires the A5 packed-cache backend")
+            # The A5 packed backend is the validated capture path. The standard
+            # backend is A6's normal decode path (Model Runner V2 runs the full
+            # graph, so every step builds metadata in-graph); the capture is
+            # therefore allowed and only its replay correctness still needs
+            # on-card validation. Log once: this runs per cache group per step.
+            logger.warning_once(
+                "V4.1 device metadata is captured without the A5 packed-cache backend; this is the "
+                "normal A6 path, and its replay correctness has not been validated on hardware yet."
+            )
         self.enable_device_metadata()
         self._device_metadata_in_graph = in_graph
         try:
@@ -1169,6 +1234,9 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
                 else:
                     if compressed and req.compress_ratio != 1:
                         active_slots = compressed_slot_mapping(active_slots, req.compress_ratio)
+                        # Physical block 0 is the scheduler's reserved null page;
+                        # see ``_skip_null_page_slots``.
+                        active_slots = _skip_null_page_slots(active_slots, req.storage_block_size)
                     valid = active_slots >= 0
                     if compressed and req.compress_ratio == 2:
                         if kwargs.get("skip_ring_state_update", False):
@@ -1575,6 +1643,7 @@ class AscendDSAV41AttentionMetadataBuilder(AscendDSAV41MetadataBuilder):
                     layout_kv="PA_BBND",
                     has_ori_kv=True,
                     has_cmp_kv=has_compressed,
+                    metadata_size=get_current_hardware_profile().smla_metadata_size,
                 )
                 self._smla_metadata.copy_(value)
 
@@ -1671,6 +1740,34 @@ class AscendDSAV41IndexerMetadataBuilder(AscendDSAV41AttentionMetadataBuilder):
                         candidate_block_size=candidate_block_size,
                     )
                     self._qli_metadata.copy_(value)
+            elif DeviceOperator.get_dsa_lightning_indexer_op() is not None:
+                # The delivered quant_lightning_indexer kernel has its own
+                # metadata operator and rejects the in-tree 1024-int32 layout.
+                # Its output length follows the tiling parameters (1288 for a
+                # single request), so resize the published buffer to the
+                # operator's size before copying instead of assuming one.
+                def build_qli_metadata() -> None:
+                    value = DeviceOperator.get_dsa_lightning_indexer_metadata_op(
+                        num_heads_q=int(_config_value(text_config, "index_n_heads")),
+                        num_heads_k=1,
+                        head_dim=int(_config_value(text_config, "index_head_dim")),
+                        topk=index_topk,
+                        quant_mode=DeviceOperator.get_dsa_indexer_quant_mode(),
+                        cu_seqlens_q=common.query_start_loc[: req.num_reqs + 1].int(),
+                        seqused_k=req.cache_seq_lens,
+                        cmp_residual_k=residual,
+                        batch_size=req.num_reqs,
+                        max_seqlen_q=int(getattr(common, "max_query_len", 0)),
+                        max_seqlen_k=req.max_cache_seq_len,
+                        layout_q="TND",
+                        layout_k="PA_BBND",
+                        mask_mode=3,
+                        cmp_ratio=req.compress_ratio,
+                    )
+                    if self._qli_metadata.numel() != value.numel():
+                        self._qli_metadata.resize_(value.numel())
+                    self._qli_metadata.copy_(value)
+
             else:
 
                 def build_qli_metadata() -> None:

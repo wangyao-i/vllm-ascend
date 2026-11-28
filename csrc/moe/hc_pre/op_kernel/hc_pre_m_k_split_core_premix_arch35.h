@@ -48,7 +48,9 @@ public:
         wL1_ = l1Buffer.Get<float>()[L1_BUF_NUM * L1_BUF_OFFSET];
 
         pipe->InitBuffer(xQue, DOUBLE_BUFFER, tilingData->mUbSize * RoundUp<T>(tilingData->kUbSize) * sizeof(T));
-        uint64_t maxMRows = CeilDiv(tilingData->mL1Size, 2);
+        // 每个 AIV 负责的行数：A5 (1 cube : 2 vector) 为半块，A6 (1:1) 为整块。
+        // 用运行时查询的配比，不要写死 2（否则 A6 上只算一半行）。
+        uint64_t maxMRows = CeilDiv(tilingData->mL1Size, GetSubBlockNum());
         uint64_t dPerCore = tilingData->multCoreSplitKSize / tilingData->hcMult;
         uint64_t maxGroupK =
             AscendC::Std::min((uint64_t)tilingData->kL1Size, AscendC::Std::min(dPerCore, (uint64_t)tilingData->d));
@@ -66,7 +68,7 @@ public:
         xNd2NzLocal = nd2NzBuf.Get<float>();
         yAccLocal = yAccBuf.Get<float>();
         if ASCEND_IS_AIC {
-            mmService_.Init();
+            mmService_.Init(tilingData->aivPerAic);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
@@ -77,9 +79,12 @@ public:
     __aicore__ inline void Process()
     {
         int64_t curBlockIdx = GetBlockIdx();
+        // 每个 AIC 挂几个 AIV：910B(48/24)=2，960DT(64/64)=1。
+        // AIV 的 GetBlockIdx() 已按该比例展开（cube*ratio+sub），故除以它才是逻辑块号。
+        const int64_t subBlockNum = GetSubBlockNum();
         int64_t logicalBlockIdx = curBlockIdx;
         if ASCEND_IS_AIV {
-            logicalBlockIdx = curBlockIdx / 2;
+            logicalBlockIdx = curBlockIdx / subBlockNum;
         }
         int64_t activeBlockNum = tilingData->cubeBlockDimM * tilingData->cubeBlockDimK;
         if (logicalBlockIdx >= activeBlockNum) {
@@ -106,7 +111,7 @@ public:
         uint64_t dCoreSize = AscendC::Std::min(dPerCore, (uint64_t)tilingData->d - dCoreStart);
         uint64_t dGroupCount = CeilDiv(dCoreSize, tilingData->kL1Size);
         uint64_t nd2NzBufSize = CeilAlign(tilingData->mUbSize, C0_SIZE) * RoundUp<float>(tilingData->kUbSize);
-        uint64_t yAccSliceSize = CeilDiv(tilingData->mL1Size, 2) * RoundUp<float>(tilingData->kUbSize);
+        uint64_t yAccSliceSize = CeilDiv(tilingData->mL1Size, subBlockNum) * RoundUp<float>(tilingData->kUbSize);
         int64_t bufferIdx = 0;
         if ASCEND_IS_AIV {
             SetFlag<HardEvent::MTE3_V>(static_cast<event_t>(0));
@@ -115,13 +120,14 @@ public:
 
         for (uint64_t roundIdx = 0; roundIdx < coreRound; ++roundIdx, mGmOffset += tilingData->mL1Size) {
             uint64_t mReal = AscendC::Std::min((uint64_t)tilingData->bs - mGmOffset, (uint64_t)tilingData->mL1Size);
-            uint64_t firstHalfRows = CeilDiv(mReal, 2);
+            // 行按子块切：A5 两块各一半（与改前逐位等价），A6 一块干整块。
+            uint64_t rowsPerSub = CeilDiv(mReal, static_cast<uint64_t>(subBlockNum));
             uint64_t localRowOffset = 0;
-            uint64_t localRows = firstHalfRows;
+            uint64_t localRows = rowsPerSub;
             if ASCEND_IS_AIV {
-                if (curBlockIdx & 1) {
-                    localRowOffset = firstHalfRows;
-                    localRows = mReal - firstHalfRows;
+                if (GetSubBlockIdx() != 0) {
+                    localRowOffset = rowsPerSub;
+                    localRows = mReal - rowsPerSub;
                 }
             }
             if ASCEND_IS_AIV {

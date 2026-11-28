@@ -109,8 +109,11 @@ bool CompleteCoreRowTiling(CoreRowTiling &rowTiling, int64_t rowFactor)
     return true;
 }
 
-uint64_t SelectPremixML1Size(int64_t bs, uint64_t mDimNum, uint64_t kSize)
+uint64_t SelectPremixML1Size(int64_t bs, uint64_t mDimNum, uint64_t kSize, uint64_t aivPerAic)
 {
+    // 每 AIV 行数上限 = M_L1_UBAWARE_MAX_SIZE/2，与配比挂钩：
+    // A5(aivPerAic=2) -> 208 与改前一致；A6(1) -> 104，保证 UB 占用不变。
+    const uint64_t mUbAwareMax = M_L1_UBAWARE_MAX_SIZE / 2U * aivPerAic;
     uint64_t bestM = M_L1_MAX_SIZE;
     uint64_t bestCost = ~static_cast<uint64_t>(0);
     for (uint64_t mL1Size = M_L1_MAX_SIZE; mL1Size >= AscendC::BLOCK_CUBE;
@@ -128,7 +131,7 @@ uint64_t SelectPremixML1Size(int64_t bs, uint64_t mDimNum, uint64_t kSize)
             bestM = mL1Size;
         }
     }
-    return std::min(bestM, M_L1_UBAWARE_MAX_SIZE);
+    return std::min(bestM, mUbAwareMax);
 }
 
 struct PremixUbConfig {
@@ -398,6 +401,17 @@ private:
     double hcEps_ = 0.0;
     double normEps_ = 0.0;
     platform_ascendc::SocVersion socVersion_ = platform_ascendc::SocVersion::ASCEND910B;
+    bool hasPlatformInfo_ = false;
+
+    // 每个 AIC 挂几个 AIV：910B(48/24)=2，960DT(64/64)=1。
+    // 编译期拿不到 platformInfo 的兜底路径返回 2，保持 A5 既有 tiling 不变。
+    uint64_t AivPerAic() const
+    {
+        if (!hasPlatformInfo_ || aicCoreNum_ == 0) {
+            return 2U;
+        }
+        return (aivCoreNum_ / aicCoreNum_ < 2U) ? 1U : 2U;
+    }
 };
 
 ge::graphStatus HcPreTilingRegbase::GetPlatformInfo()
@@ -418,6 +432,7 @@ ge::graphStatus HcPreTilingRegbase::GetPlatformInfo()
         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSizePlatForm);
         ubSize_ = ubSizePlatForm;
         socVersion_ = ascendcPlatform.GetSocVersion();
+        hasPlatformInfo_ = true;
     }
     return ge::GRAPH_SUCCESS;
 }
@@ -609,7 +624,7 @@ ge::graphStatus HcPreTilingRegbase::CalcRegbaseCommonTiling(bool hasPreMix, bool
                return ge::GRAPH_FAILED);
     RowAndDTiling rowAndDTiling;
     PremixUbTiling ubTiling;
-    ubTiling.mUbSize = CeilDiv(tilingData_.get_mL1Size(), HALF_SPLIT);
+    ubTiling.mUbSize = CeilDiv(tilingData_.get_mL1Size(), static_cast<int64_t>(AivPerAic()));
     ubTiling.kUbSize = tilingData_.get_kL1Size() / HALF_SPLIT;
     ubTiling.bufferPool0Size = static_cast<int64_t>(ubSize_);
     if (hasPreMix) {
@@ -643,7 +658,7 @@ ge::graphStatus HcPreTilingRegbase::InitPremixUbConfig(bool isKSplit, PremixUbCo
     config.hcMult = hcMult_;
     config.hcMultAlign = RoundUp(hcMult_, BLOCK_SIZE / sizeof(float));
     config.kBlockNum = tilingData_.get_cubeBlockDimK();
-    config.maxMRows = CeilDiv(tilingData_.get_mL1Size(), HALF_SPLIT);
+    config.maxMRows = CeilDiv(tilingData_.get_mL1Size(), static_cast<int64_t>(AivPerAic()));
     config.isKSplit = isKSplit;
     config.d = d_;
     config.kL1Size = tilingData_.get_kL1Size();
@@ -744,11 +759,12 @@ ge::graphStatus HcPreTilingRegbase::CalcOpTiling()
         std::min(A_L1_SIZE / tilingData_.get_mL1Size(), K_L1_MAX_SIZE) / K_L1_ALIGN * K_L1_ALIGN);
 
     tilingData_.set_cvLoopKSize(1024);
+    tilingData_.set_aivPerAic(static_cast<int64_t>(AivPerAic()));
     const bool isKSplit = kDimNum != 1;
     if (!isKSplit && hasPreMix) {
         mDimNum = aicCoreNum_;
         tilingData_.set_cubeBlockDimM(mDimNum);
-        tilingData_.set_mL1Size(SelectPremixML1Size(bs_, mDimNum, kSize));
+        tilingData_.set_mL1Size(SelectPremixML1Size(bs_, mDimNum, kSize, AivPerAic()));
         tilingData_.set_kL1Size(
             std::min(A_L1_SIZE / tilingData_.get_mL1Size(), K_L1_MAX_SIZE) / K_L1_ALIGN * K_L1_ALIGN);
     }

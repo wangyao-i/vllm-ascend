@@ -53,18 +53,18 @@ public:
 
         pipe->InitBufPool(tbufPool0, tilingData->bufferPool0Size);
         tbufPool0.InitBuffer(mmXBuf,
-                             CeilDiv(tilingData->mL1Size, AIVS_PER_AIC) * RoundUp<float>(tilingData->hcMix) *
+                             CeilDiv(tilingData->mL1Size, GetSubBlockNum()) * RoundUp<float>(tilingData->hcMix) *
                                  sizeof(float));
         mmXLocal = mmXBuf.Get<float>();
 
         if ASCEND_IS_AIC {
-            mmService_.Init();
+            mmService_.Init(tilingData->aivPerAic);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
         } else {
-            tbufPool0.InitBuffer(rmsNormBuf, RoundUp<float>(CeilDiv(tilingData->mL1Size, 2)) * sizeof(float));
+            tbufPool0.InitBuffer(rmsNormBuf, RoundUp<float>(CeilDiv(tilingData->mL1Size, GetSubBlockNum())) * sizeof(float));
             tbufPool0.InitBufPool(tbufPool1, tilingData->bufferPool1Size);
 
             tbufPool0.InitBuffer(hcBaseBuf0, tilingData->hcMultAlign * sizeof(float));
@@ -80,9 +80,12 @@ public:
     __aicore__ inline void Process()
     {
         int64_t curBlockIdx = GetBlockIdx();
+        // One AIC drives GetSubBlockNum() AIVs: 2 on a 1:2 part (A5),
+        // 1 on A6's 1:1 part. Never assume 2 - that halves A6's rows.
+        const int64_t subBlockNum = GetSubBlockNum();
         int64_t logicalBlockIdx = curBlockIdx;
         if ASCEND_IS_AIV {
-            logicalBlockIdx = curBlockIdx / 2;
+            logicalBlockIdx = curBlockIdx / subBlockNum;
         }
         if (logicalBlockIdx >= tilingData->cubeBlockDimM) {
             if ASCEND_IS_AIV {
@@ -124,11 +127,11 @@ public:
                     tilingData->mL1Size;
             }
         } else {
-            if (mainCoreCount == 0 || (curBlockIdx / 2) <= mainCoreCount) {
-                mGmOffset = curBlockIdx / 2 * singleCoreMaxRound * tilingData->mL1Size;
+            if (mainCoreCount == 0 || (curBlockIdx / subBlockNum) <= mainCoreCount) {
+                mGmOffset = curBlockIdx / subBlockNum * singleCoreMaxRound * tilingData->mL1Size;
             } else {
                 mGmOffset = (mainCoreCount * singleCoreMaxRound +
-                             (curBlockIdx / 2 - mainCoreCount) * (singleCoreMaxRound - 1)) *
+                             (curBlockIdx / subBlockNum - mainCoreCount) * (singleCoreMaxRound - 1)) *
                             tilingData->mL1Size;
             }
         }
@@ -167,12 +170,12 @@ public:
                 xNd2NzLocal = nd2NzBuf.Get<float>();
                 rmsNormLocal = rmsNormBuf.Get<float>();
                 WaitFlag<HardEvent::MTE3_MTE2>(static_cast<event_t>(0));
-                if (GetBlockIdx() % 2 != 0) {
-                    xSplitOffset = CeilDiv(mL1RealSize, 2) * tilingData->hcMult * tilingData->d;
-                    xOutSplitOffset = CeilDiv(mL1RealSize, 2) * tilingData->hcMult * tilingData->d;
-                    ySplitOffset = CeilDiv(mL1RealSize, 2) * tilingData->d;
-                    postSplitOffset = CeilDiv(mL1RealSize, 2) * tilingData->hcMult;
-                    combFragSplitOffset = CeilDiv(mL1RealSize, 2) * tilingData->hcMult * tilingData->hcMult;
+                if (GetSubBlockIdx() != 0) {
+                    xSplitOffset = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)) * tilingData->hcMult * tilingData->d;
+                    xOutSplitOffset = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)) * tilingData->hcMult * tilingData->d;
+                    ySplitOffset = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)) * tilingData->d;
+                    postSplitOffset = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)) * tilingData->hcMult;
+                    combFragSplitOffset = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)) * tilingData->hcMult * tilingData->hcMult;
                 }
             }
             // k轴切分（kCoreDim=1）
@@ -206,13 +209,14 @@ public:
                     CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
                 } else {
                     CrossCoreWaitFlag<SYNC_MODE4, PIPE_MTE3>(SYNC_AIC_AIV_FLAG);
-                    // 偶数核取前半段(CeilDiv，多处理一行)、奇数核取后半段，须与 sinkhorn/输出阶段的行划分一致，
-                    // 否则 mL1RealSize 为奇数时后半段错位一行。
-                    int64_t rowFactor = CeilDiv(mL1RealSize, 2);
+                    // The first sub-block takes CeilDiv rows (one extra when the
+                    // row count is odd) and the other takes the tail, so the
+                    // sinkhorn/output row partition stays aligned.
+                    int64_t rowFactor = CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum));
                     int64_t tailRowFactor = mL1RealSize - rowFactor;
                     int64_t curRowFactor = rowFactor;
                     int64_t mL1SizeAlign = CeilAlign(mL1RealSize, AscendC::BLOCK_CUBE);
-                    if (curBlockIdx % 2 == 1) {
+                    if (GetSubBlockIdx() != 0) {
                         curRowFactor = tailRowFactor;
                     }
                     float coeff = 1 / static_cast<float>(tilingData->hcMult * tilingData->d);
@@ -243,7 +247,7 @@ public:
                         SetFlag<HardEvent::V_MTE3>(static_cast<event_t>(bufferIdx & 1));
                         WaitFlag<HardEvent::V_MTE3>(static_cast<event_t>(bufferIdx & 1));
 
-                        if (curBlockIdx % 2 == 0) {
+                        if (GetSubBlockIdx() == 0) {
                             DataCopyParams dataCopyXParams;
                             dataCopyXParams.blockCount = CeilDiv(tilingData->kUbSize, C0_SIZE);
                             dataCopyXParams.blockLen = curRowFactor * C0_SIZE * sizeof(float) / BLOCK_SIZE;
@@ -300,11 +304,9 @@ public:
                 SetWaitFlag<HardEvent::V_MTE2>(HardEvent::V_MTE2);
 
                 // m内层循环
-                int64_t currentRow = mL1RealSize / 2;
-                if (mL1RealSize % 2 == 1 && curBlockIdx % 2 == 0) {
-                    // m不整除时偶数核多处理一行
-                    currentRow += 1;
-                }
+                int64_t subBlockRows = static_cast<int64_t>(CeilDiv(mL1RealSize, static_cast<uint64_t>(subBlockNum)));
+                int64_t currentRow =
+                    GetSubBlockIdx() == 0 ? subBlockRows : static_cast<int64_t>(mL1RealSize) - subBlockRows;
                 for (int64_t innerRowIdx = 0; innerRowIdx < currentRow; innerRowIdx += tilingData->rowInnerFactor) {
                     int64_t currentInnerRowFactor = innerRowIdx + tilingData->rowInnerFactor >= currentRow
                                                         ? currentRow - innerRowIdx
@@ -460,7 +462,6 @@ private:
     HcPreCubeCompute mmService_;
     LocalTensor<float> xL1_;
     LocalTensor<float> wL1_;
-    static constexpr uint32_t AIVS_PER_AIC = 2;
     static constexpr uint64_t SYNC_AIV_AIC_FLAG = 8;
     static constexpr uint64_t SYNC_AIC_AIV_FLAG = 9;
     static constexpr uint64_t SYNC_AIC_AIV_PRE_POST_FLAG = 10;

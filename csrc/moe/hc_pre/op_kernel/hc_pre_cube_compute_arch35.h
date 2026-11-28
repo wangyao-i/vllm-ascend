@@ -24,7 +24,8 @@ namespace HcPreNs
     constexpr static uint32_t FINAL_ACCUMULATION = 3;
     constexpr static uint32_t NON_FINAL_ACCUMULATION = 2;
     // constexpr static int32_t C0_SIZE = AscendC::AuxGetC0Size<float>();
-    constexpr static bool splitM_ = true;
+    // fixpipe 的 dual-dst 对半投递（DUAL_DST_SPLIT_M）只在 1 cube : 2 vector 上成立；
+    // A6 是 1:1，必须整块投递。这里不再写死 true，见 HcPreCubeCompute::Init()。
     constexpr static uint64_t SPLIT_M_ALIGN = 2;
     static constexpr uint64_t L1_ALLOC_SIZE = 512 * 1024;
     static constexpr uint64_t L1_BUF_NUM = 2;
@@ -34,6 +35,7 @@ namespace HcPreNs
     class HcPreCubeCompute
     {
     public:
+        bool splitM_ = true;
         uint64_t m_{0};
         uint64_t n_{0};
         uint64_t k_{0};
@@ -63,8 +65,11 @@ namespace HcPreNs
             return bL1BufferID_;
         }
 
-        __aicore__ inline void Init()
+        __aicore__ inline void Init(int64_t aivPerAic = 2)
         {
+            // 仅 1:2 的 part 才把 M 对半投递给两个 AIV；1:1 的 part 由单个 AIV 拿整块。
+            // AIC 上 GetSubBlockNum() 恒为 1，所以比例必须由 tiling 传进来。
+            splitM_ = aivPerAic > 1;
             // L0 空间的分配
             uint32_t aL0OneBuffer = 256 * 32;
             uint32_t bL0OneBuffer = 256 * 32;

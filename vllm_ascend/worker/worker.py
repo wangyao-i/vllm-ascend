@@ -316,11 +316,19 @@ class NPUWorker(WorkerBase):
             name: param.detach().to("cpu") for name, param in parameters.items() if name in names and not param.is_cpu
         }
 
+    @staticmethod
+    def _reset_weight_dependent_caches(model: nn.Module) -> None:
+        """Drop per-layer caches derived from weight values after an in-place reload."""
+        reset = getattr(model, "reset_weight_dependent_caches", None)
+        if reset is not None:
+            reset()
+
     @torch.no_grad()
     def _restore_sleep_parameters(self, model: nn.Module) -> None:
         for name, value in self._sleep_saved_parameters.items():
             model.get_parameter(name).copy_(value)
         self._sleep_saved_parameters.clear()
+        self._reset_weight_dependent_caches(model)
 
     def sleep(self, level: int = 1) -> None:
         self.synchronize_device()
@@ -441,6 +449,7 @@ class NPUWorker(WorkerBase):
         except BaseException:
             self._weight_update_active = False
             raise
+        self._reset_weight_dependent_caches(self.model_runner.model)
 
     def finish_weight_update(self) -> None:
         """Finish the current weight update; runs layerwise postprocessing."""
@@ -452,6 +461,9 @@ class NPUWorker(WorkerBase):
         assert self.weight_transfer_engine is not None
         self.weight_transfer_engine.finish_weight_update()
         self.model_runner.reset_lora_state()
+        # Layerwise postprocessing is the last write to the weights, so the
+        # value-derived caches are refreshed after it, not only per chunk.
+        self._reset_weight_dependent_caches(self.model_runner.model)
         self._weight_update_active = False
 
     def shutdown(self) -> None:
@@ -528,6 +540,8 @@ class NPUWorker(WorkerBase):
         device = torch.device(f"{current_platform.device_type}:{visible_device_index}")
 
         torch.npu.set_device(device)
+        # The A6 profile disables the operator early-start window to keep
+        # per-operator timings clean; the profile is the only switch.
         if get_current_hardware_profile().supports(HardwareCapability.DISABLE_OP_EARLY_START):
             torch.npu.set_op_early_start(0)
 

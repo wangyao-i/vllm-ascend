@@ -3277,7 +3277,7 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "int batch_size=0, int max_seqlen_q=0, int max_seqlen_ori_kv=0, int max_seqlen_cmp_kv=0, "
         "int ori_topk=0, int cmp_topk=0, int cmp_ratio=0, int ori_mask_mode=0, int cmp_mask_mode=0, "
         "int ori_win_left=-1, int ori_win_right=-1, str layout_q='BSND', str layout_kv='BSND', "
-        "bool has_ori_kv=True, bool has_cmp_kv=True) -> Tensor"
+        "bool has_ori_kv=True, bool has_cmp_kv=True, int metadata_size=-1) -> Tensor"
     );
     ops.impl("npu_sparse_flash_mla_metadata", torch::kPrivateUse1,
              &vllm_ascend::npu_sparse_flash_mla_metadata);

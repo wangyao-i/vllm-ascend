@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import typing
+import weakref
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -525,6 +526,15 @@ def build_layer_plan(config: Any) -> DeepseekV41Topology:
     candidate_block_size = int(config.candidate_block_size)
     index_topk = int(config.index_topk)
 
+    # The two-level candidate TopK (block candidates, then positions inside
+    # them) exists only in the in-tree QLI operator whose folded index cache it
+    # reads. A stack that runs the delivered QLI operator has no candidate
+    # semantics, so every layer falls back to the plain mode-3 TopK over the
+    # whole compressed cache.
+    candidate_enabled = DeviceOperator.get_dsa_lightning_indexer_op() is None
+    if not candidate_enabled:
+        candidate_source = -1
+
     ratios = ratios[:num_layers]
 
     engram_slots = {layer_idx: slot for slot, layer_idx in enumerate(engram_layers)}
@@ -541,11 +551,13 @@ def build_layer_plan(config: Any) -> DeepseekV41Topology:
                 index_source_layer=index_source,
                 is_kv_source=layer_idx in kv_sources,
                 is_index_source=layer_idx in index_sources,
-                is_candidate_source=layer_idx == candidate_source,
+                is_candidate_source=candidate_enabled and layer_idx == candidate_source,
                 # Consumer layers inherit the selection policy of their index
                 # source.  For example, layer 26 reuses layer 24 TopK, and that
                 # TopK was computed inside layer 20's candidate blocks.
-                uses_candidate_filter=index_source is not None and index_source > candidate_source,
+                uses_candidate_filter=(
+                    candidate_enabled and index_source is not None and index_source > candidate_source
+                ),
                 engram_slot=engram_slots.get(layer_idx),
             )
         )
@@ -767,6 +779,20 @@ class DeepseekV41Attention(DeepseekV41SWAAttention):
         torch.ops.vllm.dsa_v41_write_kv(hidden_states, output, self.v41_layer_name)
 
 
+def _hc_pre_pad_scale(dim: int, pad: int) -> float:
+    """Scale that undoes the padded hc_pre ``rstd`` inflation.
+
+    The kernel's inv-RMS divides the squared sum by the flattened width it is
+    handed, so folding ``pad`` zero columns leaves the sum untouched but widens
+    the mean, and ``rstd`` comes out sqrt((dim + pad) / dim) too large. The
+    pre/post/comb logits are ``(hc_fn @ x) * rstd``, so folding this reciprocal
+    into ``hc_fn`` restores them; ``base``, ``scale`` and ``pre_mix`` are additive
+    and stay unscaled. ``y`` is the premix kernels' ``sum(hc) pre_mix * x``, which
+    never multiplies by ``rstd``, so it must not be scaled.
+    """
+    return (dim / (dim + pad)) ** 0.5
+
+
 class DeepseekV41DecoderLayer(nn.Module):
     """V4.1 block with the checkpoint's delayed mHC coefficient handoff."""
 
@@ -824,6 +850,7 @@ class DeepseekV41DecoderLayer(nn.Module):
         self.hc_mult = hc_mult = config.hc_mult
         self.hc_sinkhorn_iters = config.hc_sinkhorn_iters
         self.hc_eps = config.hc_eps
+        self.hc_pre_width_alignment = get_current_hardware_profile().hc_pre_width_alignment
         mix_hc = (2 + hc_mult) * hc_mult
         hc_dim = hc_mult * config.hidden_size
         self.hc_attn_fn = nn.Parameter(torch.empty(mix_hc, hc_dim, dtype=torch.float32))
@@ -858,7 +885,100 @@ class DeepseekV41DecoderLayer(nn.Module):
     def hc_collapse(x, pre_mix):
         return (pre_mix.unsqueeze(-1) * x.float()).sum(-2).to(x.dtype)
 
+    # The HcPre kernel never returns when the mixed-projection width is
+    # not a multiple of the hardware profile's alignment; 1 keeps the plain
+    # call. ``__init__`` overrides this with the profile's value.
+    hc_pre_width_alignment: int = 1
+    # ``id(hc_fn)`` -> [weakref to that tensor, padded buffer, source data_ptr].
+    # The buffer is allocated once per (weight, dim, pad) and refilled in place:
+    # its address is an input of a captured full graph, so dropping the entry
+    # would free memory that a replay still reads (or force a recapture).
+    _hc_fn_pad_cache: dict[tuple[int, int, int], list] | None = None
+
+    def _pad_hc_fn(self, hc_fn, dim, pad):
+        rows = hc_fn.shape[0]
+        # ``detach`` keeps the padded copy out of the autograd graph, so it never
+        # pins the weight it was derived from.
+        padded = F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad))
+        # The kernel's inv-RMS divides the squared sum by ``hc_mult * d`` with ``d``
+        # taken from the *padded* width, so padding widens the mean and makes
+        # ``rstd`` sqrt((dim + pad) / dim) too large. The pre/post/comb logits are
+        # ``(hc_fn @ x) * rstd``, so folding the reciprocal into the padded weight
+        # restores them; ``base``, ``scale`` and ``pre_mix`` are additive and must
+        # stay unscaled. ``y`` never multiplies by ``rstd`` (see below).
+        padded = padded * _hc_pre_pad_scale(dim, pad)
+        return padded.reshape(rows, self.hc_mult * (dim + pad))
+
+    def _padded_hc_fn(self, hc_fn, dim, pad):
+        """Return ``hc_fn`` with every ``dim``-wide branch block zero-padded."""
+        cache = self._hc_fn_pad_cache
+        if cache is None:
+            cache = self._hc_fn_pad_cache = {}
+        key = (id(hc_fn), dim, pad)
+        entry = cache.get(key)
+        # Identity, ``_version`` and ``data_ptr`` all survive an in-place reload,
+        # so a hit proves nothing about the values; ``reset_hc_pre_cache`` is what
+        # refreshes them. The address check only catches a storage swap.
+        if entry is not None and entry[0]() is hc_fn and entry[2] == hc_fn.data_ptr():
+            return entry[1]
+        if entry is not None and entry[0]() is hc_fn:
+            entry[1].copy_(self._pad_hc_fn(hc_fn, dim, pad))
+            entry[2] = hc_fn.data_ptr()
+            return entry[1]
+        # Drop entries whose source tensor is gone so a long-lived process that
+        # swaps weights cannot accumulate padded copies.
+        dead = [stale for stale, (source, _, _) in cache.items() if source() is None]
+        for stale in dead:
+            del cache[stale]
+        buffer = self._pad_hc_fn(hc_fn, dim, pad)
+        cache[key] = [weakref.ref(hc_fn), buffer, hc_fn.data_ptr()]
+        return buffer
+
+    def reset_hc_pre_cache(self) -> None:
+        """Refill padded weight snapshots in place after their weights changed.
+
+        Loaders write ``param.data.copy_(...)`` and sleep/wake restores write
+        ``get_parameter(name).copy_(...)``; both keep the Parameter object, its
+        ``_version`` and its ``data_ptr``, so nothing inside the cache can notice.
+        The buffers are refilled instead of dropped because their addresses are
+        inputs of the captured full graph and a replay reads memory, not Python.
+        """
+        cache = self._hc_fn_pad_cache
+        if not cache:
+            return
+        for key, entry in list(cache.items()):
+            source = entry[0]()
+            if source is None:
+                del cache[key]
+                continue
+            _, dim, pad = key
+            entry[1].copy_(self._pad_hc_fn(source, dim, pad))
+            entry[2] = source.data_ptr()
+
     def hc_pre(self, x, hc_fn, hc_scale, hc_base, pre_mix=None):
+        align = self.hc_pre_width_alignment
+        pad = (-x.shape[-1]) % align if align > 1 else 0
+        if pad:
+            # The padded width changes the kernel's RMS denominator, so the
+            # padded weight is pre-scaled to compensate (see ``_pad_hc_fn``);
+            # ``hc_fn`` itself, the cache layout and the weights stay untouched.
+            dim = x.shape[-1]
+            x_padded = F.pad(x, (0, pad))
+            y, post, comb_frag, pre = torch.ops._C_ascend.npu_hc_pre_v3(
+                x_padded,
+                self._padded_hc_fn(hc_fn, dim, pad),
+                hc_scale,
+                hc_base,
+                pre_mix,
+                hc_mult=self.hc_mult,
+                hc_sinkhorn_iters=self.hc_sinkhorn_iters,
+                norm_eps=self.norm_eps,
+                hc_eps=self.hc_eps,
+            )
+            # ``y`` is ``sum(hc) pre_mix * x`` in the premix kernels, so the padded
+            # columns only add zeros and it is already exact; only the logits are
+            # built from ``rstd`` and needed the weight compensation.
+            return y[..., :dim], post, comb_frag, pre
         return torch.ops._C_ascend.npu_hc_pre_v3(
             x,
             hc_fn,
@@ -1819,6 +1939,19 @@ class AscendDeepseekV41LLMForCausalLM(nn.Module, DeepseekV41MixtureOfExperts, Su
             marker in name for marker in cls._DEFERRED_WEIGHT_MARKERS
         )
 
+    def reset_weight_dependent_caches(self) -> None:
+        """Invalidate state derived from weight values rather than identity.
+
+        Every supported reload path writes into the existing Parameter storage
+        (``param.data.copy_`` while loading, ``get_parameter(name).copy_`` on
+        sleep/wake, and the RL weight-transfer engine), so caches keyed on tensor
+        identity stay valid while their contents go stale.
+        """
+        for module in self.modules():
+            reset = getattr(module, "reset_hc_pre_cache", None)
+            if reset is not None:
+                reset()
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         if not self.model.has_engram:
             return self._load_model_weights((name, tensor) for name, tensor in weights if ".engram." not in name)
@@ -2105,6 +2238,7 @@ class AscendDeepseekV41LLMForCausalLM(nn.Module, DeepseekV41MixtureOfExperts, Su
             if not is_fusion_moe_shared_experts_layer:
                 loaded_params.add(name)
 
+        self.reset_weight_dependent_caches()
         return loaded_params
 
     @property

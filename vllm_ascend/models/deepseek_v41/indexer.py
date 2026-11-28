@@ -14,6 +14,7 @@ from vllm_ascend.attention.dsa_v41 import (
 )
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.models.deepseek_v41.cache_config import (
+    indexer_fp8_cache_contract,
     make_folded_index_cache_spec,
     make_index_cache_spec,
     uses_a5_packed_cache,
@@ -54,6 +55,9 @@ class DeepseekV41Indexer(nn.Module):
         super().__init__()
         self.owns_k = owns_k
         self.packed_cache_ops = DeviceOperator.get_dsv41_packed_cache_ops()
+        # The index cache plane and this write path share one contract; the spec
+        # asks the same function, so the two can never pick different layouts.
+        self.fp8_cache = self.packed_cache_ops is None and indexer_fp8_cache_contract()
         self.compress_ratio = compress_ratio
         self.n_heads = int(config.index_n_heads)
         self.width = int(config.index_head_dim)
@@ -126,6 +130,13 @@ class DeepseekV41Indexer(nn.Module):
             if self.k_cache_folded is not None:
                 fold_indexer_cache_rows((k_cache, scale_cache), self.k_cache_folded.kv_cache[0], slots)
             return
+        if self.fp8_cache:
+            # Matches the E4M3 key plane and FP32 descale the FP8 QLI kernel
+            # reads; the cache spec in ``make_index_cache_spec`` sets both.
+            quantized, scale = torch_npu.npu_dynamic_quant(key, dst_type=torch.float8_e4m3fn)
+            scatter_cache_sk(k_cache, slots, quantized)
+            scatter_cache_sk(scale_cache, slots, scale.unsqueeze(-1).to(torch.float32))
+            return
         quantized, scale = torch_npu.npu_dynamic_quant(key, dst_type=torch.int8)
         scatter_cache_sk(k_cache, slots, quantized)
         scatter_cache_sk(
@@ -186,6 +197,10 @@ class DeepseekV41Indexer(nn.Module):
     def quantize_query(self, query):
         if self.packed_cache_ops is not None:
             return quantize_mxfp4_indexer(query)
+        if self.fp8_cache:
+            # Same FP8 query quantisation the index cache and QLI kernel use;
+            # the INT8 Triton kernel would produce a layout it cannot read.
+            return DeviceOperator.indexer_quantize_query(query)
         return quantize_indexer_query(query)
 
     def select_projected(
@@ -263,9 +278,6 @@ class DeepseekV41Indexer(nn.Module):
 
         if quantized_query is None:
             quantized_query, query_scale = self.quantize_query(query)
-        weights = weights.to(torch.float16)
-        key, key_scale = source_cache
-        key_scale = key_scale.squeeze(-1)  # Preserve the Hybrid cache page stride.
         cu_seqlens_q = source_metadata.query_start_loc
         seqused_k = source_metadata.cache_seq_lens
         residual = source_metadata.cmp_residual
@@ -281,6 +293,37 @@ class DeepseekV41Indexer(nn.Module):
         )
         op_metadata = source_metadata.qli_metadata
         wait_for_device_metadata(DeviceMetadataStage.INDEXER, id(op_metadata))
+        delivered_indexer = DeviceOperator.get_dsa_lightning_indexer_op()
+        if delivered_indexer is not None:
+            # The delivered kernel is the only FP8 quant-lightning-indexer
+            # build on this stack; it takes the cache planes and their descales
+            # directly and has no candidate-block semantics, which
+            # ``build_layer_plan`` already accounts for.
+            selected, _ = delivered_indexer(
+                query=quantized_query,
+                key=source_cache[0],
+                weights=DeviceOperator.prepare_dsa_indexer_weights(weights),
+                query_dequant_scale=DeviceOperator.prepare_dsa_indexer_query_scale(query_scale),
+                key_dequant_scale=DeviceOperator.prepare_dsa_indexer_key_scale(source_cache[1]),
+                topk=topk,
+                quant_mode=DeviceOperator.get_dsa_indexer_quant_mode(),
+                block_table=source_metadata.block_table,
+                metadata=op_metadata,
+                return_value=0,
+                **common,
+            )
+            selected = prepare_indexer_indices(
+                selected.squeeze(1),
+                positions,
+                self.compress_ratio,
+                indices_output=indices_output,
+                lengths_output=topk_lengths,
+            )
+            return selected, candidates
+
+        weights = weights.to(torch.float16)
+        key, key_scale = source_cache
+        key_scale = key_scale.squeeze(-1)  # Preserve the Hybrid cache page stride.
         mode = 1 if is_candidate_source else 2 if uses_candidate_filter else 3
         selected, _, candidate_out = torch.ops._C_ascend.npu_quant_lightning_indexer_v3(
             quantized_query,

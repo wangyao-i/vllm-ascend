@@ -56,6 +56,21 @@ class BaseDeviceAdaptor:
         return None
 
     @staticmethod
+    def get_dsa_lightning_indexer_op():
+        """Return the delivered quant-lightning-indexer operator, if any.
+
+        ``None`` means the in-tree operator runs QLI, which also owns the
+        candidate-block selection; a delivered operator has no candidate
+        semantics and sizes its metadata from its own tiling.
+        """
+        return None
+
+    @staticmethod
+    def get_dsa_lightning_indexer_metadata_op(**kwargs):
+        """Return metadata for the delivered QLI operator, if one is used."""
+        return None
+
+    @staticmethod
     def host_register_flags() -> int:
         """ACL host registration flags for the standard runtime ABI."""
         # PINNED prevents paging while MAPPED exposes the host allocation to

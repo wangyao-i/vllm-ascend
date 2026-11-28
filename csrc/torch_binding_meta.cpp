@@ -422,9 +422,11 @@ at::Tensor npu_sparse_flash_mla_metadata_meta(
     int64_t ori_mask_mode, int64_t cmp_mask_mode,
     int64_t ori_win_left, int64_t ori_win_right,
     c10::string_view layout_q, c10::string_view layout_kv,
-    bool has_ori_kv, bool has_cmp_kv)
+    bool has_ori_kv, bool has_cmp_kv, int64_t metadata_size)
 {
-    return at::empty_symint(c10::SymDimVector{c10::SymInt(1024)},
+    // Keep the traced output shape identical to the device operator's: 0 means
+    // "use this CANN release's default size".
+    return at::empty_symint(c10::SymDimVector{c10::SymInt(metadata_size > 0 ? metadata_size : 1024)},
                             at::TensorOptions().dtype(at::kInt).device(c10::kMeta));
 }
 

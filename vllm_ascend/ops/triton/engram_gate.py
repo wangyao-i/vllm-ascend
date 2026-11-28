@@ -5,6 +5,19 @@
 import torch
 from vllm.triton_utils import tl, triton
 
+from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
+from vllm_ascend.ops.triton.engram_gate_torch import fused_engram_gate_torch
+
+
+def engram_gate_torch_enabled() -> bool:
+    """Return whether the gate must run the PyTorch fallback.
+
+    The hardware profile owns the decision: a stack whose capability set lacks
+    ``ENGRAM_TRITON_GATE`` cannot compile the Triton kernel (A6's bishengir
+    rejects it) and runs the equivalent PyTorch implementation instead.
+    """
+    return not get_current_hardware_profile().supports(HardwareCapability.ENGRAM_TRITON_GATE)
+
 
 @triton.jit
 def _engram_gate_kernel(
@@ -50,6 +63,9 @@ def _engram_gate_kernel(
 
 def fused_engram_gate(hidden, kv, q_weight, k_weight, token_mask, eps):
     """Fuse RMS/dot/gate/residual, keeping wkv projection outside this kernel."""
+    if engram_gate_torch_enabled():
+        return fused_engram_gate_torch(hidden, kv, q_weight, k_weight, token_mask, eps)
+
     tokens, branches, dim = hidden.shape
     if hidden.stride(-1) != 1 or kv.stride(-1) != 1:
         raise ValueError("fused Engram gate requires contiguous hidden/key channels")

@@ -89,6 +89,9 @@ class HardwareCapability(Enum):
     DSV41_PACKED_CACHE = auto()
     # Triton RMS/dot/gate/residual fusion for unrotated Engram inputs.
     ENGRAM_UNROTATED_GATE = auto()
+    # The Triton Engram gate kernel compiles on this stack. A6's bishengir
+    # cannot lower it, so it keeps the documented PyTorch fallback.
+    ENGRAM_TRITON_GATE = auto()
     # Decode native FP8 codes and E8M0 group scales in Engram table lookups.
     ENGRAM_MXFP8 = auto()
     # Enable dynamic-MX norm fusion and the associated ``wo_a`` weight-layout contract.
@@ -275,6 +278,13 @@ class HardwareProfile:
     # query length to work around native operator numerical failures. None
     # retains native dispatch; this is a stack workaround, not a silicon limit.
     gdn_fixed_spec_recurrent_fallback_min_query_len: int | None = None
+    # Number of int32 elements the packaged SparseFlashMla metadata operator
+    # accepts. The value is fixed by the delivered operator ABI, not the model.
+    smla_metadata_size: int = 1024
+    # Pad the DeepSeek-V4.1 mHC pre-mix input to a multiple of this many columns
+    # (1 disables padding). arch35's HcPre kernel never returns when the width
+    # misses the alignment, so the caller pads and slices the result back.
+    hc_pre_width_alignment: int = 1
 
     def supports(self, capability: HardwareCapability) -> bool:
         """Return whether the exact documented ``capability`` contract is available."""
@@ -337,6 +347,7 @@ _A5_CAPABILITIES = frozenset(
         HardwareCapability.DSV41_PACKED_CACHE,
         HardwareCapability.ENGRAM_UNROTATED_GATE,
         HardwareCapability.ENGRAM_MXFP8,
+        HardwareCapability.ENGRAM_TRITON_GATE,
         HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
         HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
         HardwareCapability.FLA_GDN_PREFILL,
@@ -369,6 +380,15 @@ _A5_CAPABILITIES = frozenset(
 # A6-ADAPT: no compiled extension on A6
 _A6_UNSUPPORTED_CAPABILITIES = frozenset(
     {
+        # A6 does not register the A5 packed-cache ops (DeviceOperator base
+        # returns None), and the packed write path needs SCATTER_ND_CACHE_STORE
+        # which A6 also lacks. Leaking this capability built uint8 A5-layout
+        # caches on A6 that the non-packed execution path (npu_sparse_flash_mla
+        # wants bf16/fp8) rejected.
+        HardwareCapability.DSV41_PACKED_CACHE,
+        # bishengir cannot select a vector intrinsic for the Engram gate kernel
+        # on A6, so the gate keeps the documented PyTorch fallback there.
+        HardwareCapability.ENGRAM_TRITON_GATE,
         # Use generic cache writes without changing tensor views or dtypes.
         HardwareCapability.SCATTER_ND_CACHE_STORE,
         HardwareCapability.SCATTER_ND_FP8_CACHE_STORE,
@@ -511,6 +531,7 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                     HardwareCapability.DSV41_PACKED_CACHE,
                     HardwareCapability.ENGRAM_UNROTATED_GATE,
                     HardwareCapability.ENGRAM_MXFP8,
+                    HardwareCapability.ENGRAM_TRITON_GATE,
                     HardwareCapability.DYNAMIC_MX_QUANT_FUSION,
                     HardwareCapability.DYNAMIC_MX_QUANT_SCALE_ALG_ONE,
                     HardwareCapability.FLA_GDN_PREFILL,
@@ -542,9 +563,15 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
             ),
         ),
         # Ascend960 (A6): silicon is close to A5. Reuse A5's validated
-        # capability set minus the ATB contracts A6 does not support.
+        # capability set minus ATB and the A5-only packed cache contracts.
         AscendDeviceType.A6: HardwareProfile(
             _device_type=AscendDeviceType.A6,
+            # CANN 9.3's packaged SparseFlashMla metadata rejects the 1024-int32
+            # buffer the 9.2 operator accepts.
+            smla_metadata_size=2048,
+            # arch35's HcPre kernel never returns unless the mixed-projection
+            # width is a multiple of 4096; the V4.1 width is 5120.
+            hc_pre_width_alignment=4096,
             attention_backend_family=AttentionBackendFamily.STANDARD,
             cpu_binding_mode=CPUBindingMode.TOPO_AFFINITY,
             default_worker_cls=_DEFAULT_WORKER_CLS,

@@ -453,3 +453,82 @@ class TestSharedPCPMetadata:
         for scenario in ("prefill", "decode", "dummy", "empty"):
             _build_planes(owners, _batch(2, 0, scenario))
         forbidden.assert_not_called()
+
+
+def _qli_builder(text_config):
+    builder = SimpleNamespace(
+        vllm_config=SimpleNamespace(model_config=SimpleNamespace(hf_text_config=text_config)),
+        _supports_device_ops=True,
+        _uses_a5_packed_cache=False,
+        _device_metadata_enabled=False,
+        _device_metadata_in_graph=False,
+        _device_metadata_tasks=(),
+        common_v41_batch_metadata={},
+        _qli_metadata=torch.zeros(dsa_v41.V41_METADATA_BUFFER_SIZE, dtype=torch.int32),
+    )
+    builder._publish_task = dsa_v41.AscendDSAV41MetadataBuilder._publish_task.__get__(builder)
+    return builder
+
+
+def _qli_request():
+    return SimpleNamespace(
+        cache_kind="index_k",
+        cmp_residual=None,
+        cache_seq_lens=torch.tensor([8, 8], dtype=torch.int32),
+        num_reqs=2,
+        max_cache_seq_len=8,
+        compress_ratio=1,
+    )
+
+
+def test_delivered_qli_metadata_sizes_the_published_buffer(monkeypatch):
+    """A6's delivered metadata op decides its own length; the buffer follows."""
+    text_config = SimpleNamespace(index_topk=4, index_n_heads=2, index_head_dim=8)
+    builder = _qli_builder(text_config)
+    request = _qli_request()
+    delivered = torch.arange(1288, dtype=torch.int32)
+    calls: dict[str, Any] = {}
+
+    def metadata_op(**kwargs):
+        calls.update(kwargs)
+        return delivered
+
+    monkeypatch.setattr(
+        dsa_v41.DeviceOperator, "get_dsa_lightning_indexer_op", staticmethod(lambda: object()), raising=False
+    )
+    monkeypatch.setattr(
+        dsa_v41.DeviceOperator, "get_dsa_lightning_indexer_metadata_op", staticmethod(metadata_op), raising=False
+    )
+    monkeypatch.setattr(dsa_v41.DeviceOperator, "get_dsa_indexer_quant_mode", staticmethod(lambda: 1), raising=False)
+    common = SimpleNamespace(query_start_loc=torch.tensor([0, 1, 2], dtype=torch.int32), max_query_len=1)
+
+    dsa_v41.AscendDSAV41IndexerMetadataBuilder._build_qli_metadata(builder, common, request)
+
+    assert request.qli_metadata is builder._qli_metadata
+    assert request.qli_metadata.numel() == delivered.numel()
+    torch.testing.assert_close(request.qli_metadata, delivered)
+    assert calls["cmp_ratio"] == 1
+    assert calls["quant_mode"] == 1
+    assert calls["topk"] == 4
+
+
+def test_in_tree_qli_metadata_keeps_the_graph_buffer(monkeypatch):
+    """Stacks without a delivered QLI op keep the preallocated 1024-int32 buffer."""
+    text_config = SimpleNamespace(index_topk=4, index_n_heads=2, index_head_dim=8)
+    builder = _qli_builder(text_config)
+    request = _qli_request()
+    expected = torch.ones(dsa_v41.V41_METADATA_BUFFER_SIZE, dtype=torch.int32)
+
+    monkeypatch.setattr(
+        dsa_v41.DeviceOperator, "get_dsa_lightning_indexer_op", staticmethod(lambda: None), raising=False
+    )
+    monkeypatch.setattr(
+        torch.ops._C_ascend, "npu_quant_lightning_indexer_v2_metadata", Mock(return_value=expected), raising=False
+    )
+    common = SimpleNamespace(query_start_loc=torch.tensor([0, 1, 2], dtype=torch.int32), max_query_len=1)
+
+    dsa_v41.AscendDSAV41IndexerMetadataBuilder._build_qli_metadata(builder, common, request)
+
+    assert request.qli_metadata.data_ptr() == builder._qli_metadata.data_ptr()
+    assert request.qli_metadata.numel() == dsa_v41.V41_METADATA_BUFFER_SIZE
+    torch.testing.assert_close(request.qli_metadata, expected)

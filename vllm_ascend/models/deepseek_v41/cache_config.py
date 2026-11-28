@@ -47,6 +47,21 @@ def uses_a5_packed_cache() -> bool:
     return get_current_hardware_profile().supports(HardwareCapability.DSV41_PACKED_CACHE)
 
 
+def indexer_fp8_cache_contract() -> bool:
+    """Whether the indexer cache is an FP8 E4M3 plane with FP32 descales.
+
+    The cache spec and the write path must agree: if the plane were allocated in
+    the INT8 layout while the quantiser emitted E4M3 (or the other way round),
+    ``scatter_sk`` would convert the values numerically instead of copying
+    bytes and the index selection would degrade silently. This function is the
+    single decision both sides call, and it is False on the packed A5 ABI, which
+    has its own layout.
+    """
+    if uses_a5_packed_cache():
+        return False
+    return get_current_hardware_profile().supports(HardwareCapability.POOL_KEY_INDEXER_FP8)
+
+
 def make_swa_cache_spec(*, block_size, window_size, head_size, dtype, cache_dtype, bounded_replay=False):
     if uses_a5_packed_cache():
         if head_size != MLA_HEAD_DIM:
@@ -100,6 +115,13 @@ def make_index_cache_spec(*, block_size, head_size, compress_ratio):
         head_size //= 2
         dtype = torch.uint8
         scale_dtype = torch.uint8
+    elif indexer_fp8_cache_contract():
+        # The FP8 quant-lightning-indexer kernel reads an E4M3 key plane with
+        # FP32 descales; an INT8 plane fails with EZ1009. This is the same
+        # quantisation contract the A5 packed path uses, in the standard layout.
+        dtype = torch.float8_e4m3fn
+        scale_dim = 1
+        scale_dtype = torch.float32
     else:
         dtype = torch.int8
         scale_dim = 1
