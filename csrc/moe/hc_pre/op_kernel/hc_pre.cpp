@@ -50,7 +50,7 @@ extern "C" __global__ __aicore__ void hc_pre(GM_ADDR x, GM_ADDR hc_fn, GM_ADDR h
     }
     TPipe pipe;
 
-    // 950PR 950DT
+    // 950PR 950DT (regbase kernels, tiling keys 1000-1003)
 #if defined(__DAV_C310__)
         if (TILING_KEY_IS(1000)) {
             GET_TILING_DATA_WITH_STRUCT(HcPreTilingData, tiling_data_in, tiling);
@@ -92,7 +92,7 @@ extern "C" __global__ __aicore__ void hc_pre(GM_ADDR x, GM_ADDR hc_fn, GM_ADDR h
             op.Process();
         }
 #else
-      // A3
+      // A3 / A5 / A6-Ascend960DT(9201): legacy kernels, tiling keys 0/1/2
         if (TILING_KEY_IS(0)) {
             GET_TILING_DATA_WITH_STRUCT(HcPreTilingData, tiling_data_in, tiling);
             const HcPreTilingData *__restrict tilingData = &tiling_data_in;

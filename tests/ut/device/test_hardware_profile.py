@@ -86,7 +86,7 @@ def test_a6_metadata_and_hc_pre_abi():
     a5 = get_hardware_profile(AscendDeviceType.A5)
 
     # CANN 9.3's packaged SparseFlashMla metadata takes 2048 int32 elements, and
-    # arch35's HcPre kernel only returns on a 4096-column multiple.
+    # the A6 HcPre build only returns on a 4096-column multiple.
     assert a6.smla_metadata_size == 2048
     assert a6.hc_pre_width_alignment == 4096
     assert a5.smla_metadata_size == 1024

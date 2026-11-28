@@ -780,7 +780,7 @@ class DeepseekV41Attention(DeepseekV41SWAAttention):
 
 
 def _hc_pre_pad_scale(dim: int, pad: int) -> float:
-    """Scale that undoes the padded arch35 hc_pre ``rstd`` inflation.
+    """Scale that undoes the padded hc_pre ``rstd`` inflation.
 
     The kernel's inv-RMS divides the squared sum by the flattened width it is
     handed, so folding ``pad`` zero columns leaves the sum untouched but widens
@@ -885,7 +885,7 @@ class DeepseekV41DecoderLayer(nn.Module):
     def hc_collapse(x, pre_mix):
         return (pre_mix.unsqueeze(-1) * x.float()).sum(-2).to(x.dtype)
 
-    # arch35's HcPre kernel never returns when the mixed-projection width is
+    # The HcPre kernel never returns when the mixed-projection width is
     # not a multiple of the hardware profile's alignment; 1 keeps the plain
     # call. ``__init__`` overrides this with the profile's value.
     hc_pre_width_alignment: int = 1
@@ -900,7 +900,7 @@ class DeepseekV41DecoderLayer(nn.Module):
         # ``detach`` keeps the padded copy out of the autograd graph, so it never
         # pins the weight it was derived from.
         padded = F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad))
-        # arch35's inv-RMS divides the squared sum by ``hc_mult * d`` with ``d``
+        # The kernel's inv-RMS divides the squared sum by ``hc_mult * d`` with ``d``
         # taken from the *padded* width, so padding widens the mean and makes
         # ``rstd`` sqrt((dim + pad) / dim) too large. The pre/post/comb logits are
         # ``(hc_fn @ x) * rstd``, so folding the reciprocal into the padded weight
