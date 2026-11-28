@@ -759,6 +759,7 @@ ge::graphStatus HcPreTilingRegbase::CalcOpTiling()
         std::min(A_L1_SIZE / tilingData_.get_mL1Size(), K_L1_MAX_SIZE) / K_L1_ALIGN * K_L1_ALIGN);
 
     tilingData_.set_cvLoopKSize(1024);
+    tilingData_.set_aivPerAic(static_cast<int64_t>(AivPerAic()));
     const bool isKSplit = kDimNum != 1;
     if (!isKSplit && hasPreMix) {
         mDimNum = aicCoreNum_;

@@ -119,6 +119,9 @@ TILING_DATA_FIELD_DEF(int64_t, sinkhornRowLoopOfTailBlock);
 TILING_DATA_FIELD_DEF(int64_t, sinkhornRowFactor);
 TILING_DATA_FIELD_DEF(int64_t, sinkhornTailRowFactorOfFormerBlock);
 TILING_DATA_FIELD_DEF(int64_t, sinkhornTailRowFactorOfTailBlock);
+// 每个 AIC 挂几个 AIV（910B=2，960DT=1）。cube 侧 Init 用它决定 fixpipe 是否
+// 用 DUAL_DST_SPLIT_M 把 M 对半投递；非 arch35 路径不读该字段。
+TILING_DATA_FIELD_DEF(int64_t, aivPerAic);
 
 END_TILING_DATA_DEF;
 

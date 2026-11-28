@@ -63,6 +63,47 @@ def test_v41_hc_pre_dispatches_fused_operator_with_pre_mix():
     )
 
 
+def test_v41_padded_hc_pre_scales_the_weight_and_leaves_y_alone():
+    """The padded path folds the rstd inflation into hc_fn; ``y`` carries none.
+
+    ``VFProcessCastInvRmsAndPremixYPart1`` accumulates ``y = sum(hc) pre_mix * x``
+    and applies ``coeff = 1 / (hc_mult * d)`` only to the RMS sum, so the padded
+    columns add zeros to ``y`` and it comes out exact. The pre/post/comb logits are
+    ``(hc_fn @ x) * rstd``, which is why only the folded weight is rescaled.
+    """
+    layer = _layer()
+    layer.hc_pre_width_alignment = 16
+    dim, pad = 8, 8
+    x = torch.randn(2, 4, dim, dtype=torch.bfloat16)
+    hc_fn = torch.randn(24, 4 * dim, dtype=torch.float32)
+    hc_scale = torch.randn(3, dtype=torch.float32)
+    hc_base = torch.randn(24, dtype=torch.float32)
+    pre_mix = torch.randn(2, 4, dtype=torch.float32)
+    raw_y = torch.linspace(0.5, 1.5, 2 * (dim + pad)).reshape(2, dim + pad).to(torch.bfloat16)
+    post = torch.randn(2, 4)
+    comb = torch.randn(2, 4, 4)
+    pre = torch.randn(2, 4)
+    rstd_inflation = ((dim + pad) / dim) ** 0.5
+
+    with patch.object(
+        torch.ops._C_ascend,
+        "npu_hc_pre_v3",
+        create=True,
+        return_value=(raw_y, post, comb, pre),
+    ) as op:
+        y, got_post, got_comb, got_pre = layer.hc_pre(x, hc_fn, hc_scale, hc_base, pre_mix)
+
+    padded_x, padded_fn = op.call_args.args[0], op.call_args.args[1]
+    assert padded_x.shape == (2, 4, dim + pad)
+    torch.testing.assert_close(padded_x[..., :dim], x)
+    assert torch.count_nonzero(padded_x[..., dim:]) == 0
+    expected_fn = torch.nn.functional.pad(hc_fn.view(24, 4, dim), (0, pad)).reshape(24, 4 * (dim + pad))
+    torch.testing.assert_close(padded_fn, expected_fn / rstd_inflation, rtol=1e-6, atol=1e-6)
+    # ``y`` is the premix collapse, which never multiplies by ``rstd``: unchanged.
+    torch.testing.assert_close(y, raw_y[:, :dim])
+    assert got_post is post and got_comb is comb and got_pre is pre
+
+
 def test_v41_forward_threads_pre_mix_through_fused_hc_pre():
     layer = _layer()
     hidden_states = torch.randn(2, 4, 8, dtype=torch.bfloat16)

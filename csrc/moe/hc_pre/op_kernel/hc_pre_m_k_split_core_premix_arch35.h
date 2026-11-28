@@ -68,7 +68,7 @@ public:
         xNd2NzLocal = nd2NzBuf.Get<float>();
         yAccLocal = yAccBuf.Get<float>();
         if ASCEND_IS_AIC {
-            mmService_.Init();
+            mmService_.Init(tilingData->aivPerAic);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);

@@ -96,12 +96,12 @@ public:
         wL1_ = l1Buffer.Get<float>()[L1_BUF_NUM * L1_BUF_OFFSET];
 
         pipe->InitBufPool(tbufPool0, tilingData->bufferPool0Size);
-        tbufPool0.InitBuffer(mmXBuf, CeilDiv(tilingData->mL1Size, DOUBLE_BUFFER) * RoundUp<float>(tilingData->hcMix) *
+        tbufPool0.InitBuffer(mmXBuf, CeilDiv(tilingData->mL1Size, GetSubBlockNum()) * RoundUp<float>(tilingData->hcMix) *
                                          sizeof(float));
         mmXLocal = mmXBuf.Get<float>();
 
         if ASCEND_IS_AIC {
-            mmService_.Init();
+            mmService_.Init(tilingData->aivPerAic);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG + FLAG_ID_MAX);
             CrossCoreSetFlag<SYNC_MODE4, PIPE_MTE1>(SYNC_AIC_AIV_FLAG);

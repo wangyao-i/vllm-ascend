@@ -779,6 +779,20 @@ class DeepseekV41Attention(DeepseekV41SWAAttention):
         torch.ops.vllm.dsa_v41_write_kv(hidden_states, output, self.v41_layer_name)
 
 
+def _hc_pre_pad_scale(dim: int, pad: int) -> float:
+    """Scale that undoes the padded arch35 hc_pre ``rstd`` inflation.
+
+    The kernel's inv-RMS divides the squared sum by the flattened width it is
+    handed, so folding ``pad`` zero columns leaves the sum untouched but widens
+    the mean, and ``rstd`` comes out sqrt((dim + pad) / dim) too large. The
+    pre/post/comb logits are ``(hc_fn @ x) * rstd``, so folding this reciprocal
+    into ``hc_fn`` restores them; ``base``, ``scale`` and ``pre_mix`` are additive
+    and stay unscaled. ``y`` is the premix kernels' ``sum(hc) pre_mix * x``, which
+    never multiplies by ``rstd``, so it must not be scaled.
+    """
+    return (dim / (dim + pad)) ** 0.5
+
+
 class DeepseekV41DecoderLayer(nn.Module):
     """V4.1 block with the checkpoint's delayed mHC coefficient handoff."""
 
@@ -888,11 +902,11 @@ class DeepseekV41DecoderLayer(nn.Module):
         padded = F.pad(hc_fn.detach().view(rows, self.hc_mult, dim), (0, pad))
         # arch35's inv-RMS divides the squared sum by ``hc_mult * d`` with ``d``
         # taken from the *padded* width, so padding widens the mean and makes
-        # ``rstd`` sqrt((dim + pad) / dim) too large. ``y`` and the pre/post/comb
-        # logits are both proportional to (hc_fn @ x) * rstd, so folding the
-        # reciprocal into the padded weight restores them; ``base``, ``scale``
-        # and ``pre_mix`` are additive and must stay unscaled.
-        padded = padded * ((dim / (dim + pad)) ** 0.5)
+        # ``rstd`` sqrt((dim + pad) / dim) too large. The pre/post/comb logits are
+        # ``(hc_fn @ x) * rstd``, so folding the reciprocal into the padded weight
+        # restores them; ``base``, ``scale`` and ``pre_mix`` are additive and must
+        # stay unscaled. ``y`` never multiplies by ``rstd`` (see below).
+        padded = padded * _hc_pre_pad_scale(dim, pad)
         return padded.reshape(rows, self.hc_mult * (dim + pad))
 
     def _padded_hc_fn(self, hc_fn, dim, pad):
@@ -961,6 +975,9 @@ class DeepseekV41DecoderLayer(nn.Module):
                 norm_eps=self.norm_eps,
                 hc_eps=self.hc_eps,
             )
+            # ``y`` is ``sum(hc) pre_mix * x`` in the premix kernels, so the padded
+            # columns only add zeros and it is already exact; only the logits are
+            # built from ``rstd`` and needed the weight compensation.
             return y[..., :dim], post, comb_frag, pre
         return torch.ops._C_ascend.npu_hc_pre_v3(
             x,
