@@ -42,7 +42,9 @@ public:
         uint64_t curVectorBlockIdx = GetBlockIdx();
         uint64_t curCubeBlockIdx = curVectorBlockIdx;
         if ASCEND_IS_AIV {
-            curCubeBlockIdx = curCubeBlockIdx / CV_RATIO;
+            // 1 cube 挂几个 vector：910B=2，960DT=1。AIV 的 blockIdx 已按该比例展开，
+            // 除以运行时配比才拿到配对 cube 的槽位（写死 2 会让 A6 上读写错槽）。
+            curCubeBlockIdx = curCubeBlockIdx / static_cast<uint64_t>(GetSubBlockNum());
         }
 
         xCastFp32BufSize_ = tilingData->mL1Size *
@@ -77,8 +79,11 @@ public:
     {
         uint64_t curBlockIdx = GetBlockIdx();
         curVectorBlockIdx = curBlockIdx;
+        // 每个 AIC 挂几个 AIV：910B(48/24)=2，960DT(64/64)=1。
+        // 用运行时配比，不要写死 2（否则 A6 上只覆盖一半 (m,k) 逻辑块）。
+        uint64_t subBlockNum = static_cast<uint64_t>(GetSubBlockNum());
         if ASCEND_IS_AIV {
-            curBlockIdx = curBlockIdx / NUM_TWO;
+            curBlockIdx = curBlockIdx / subBlockNum;
         }
         uint64_t mBlkDimIdx = curBlockIdx / tilingData->cubeBlockDimK;
         uint64_t kBlkDimIdx = curBlockIdx % tilingData->cubeBlockDimK;
@@ -153,9 +158,10 @@ public:
                 CrossCoreWaitFlag(SYNC_AIC_TO_AIV_FLAG);
                 // vec.compute();
                 int64_t mVectorOffset = mGmOffset;
-                int64_t mVectorLength = (realMSize + 1) / NUM_TWO;
-                if ((curVectorBlockIdx % NUM_TWO) == 1) {
-                    mVectorOffset = mGmOffset + (realMSize + 1) / NUM_TWO;
+                int64_t mSubBlockNum = static_cast<int64_t>(GetSubBlockNum());
+                int64_t mVectorLength = (realMSize + mSubBlockNum - 1) / mSubBlockNum;
+                if (mSubBlockNum > 1 && (curVectorBlockIdx % static_cast<uint64_t>(mSubBlockNum)) == 1) {
+                    mVectorOffset = mGmOffset + mVectorLength;
                     mVectorLength = realMSize - mVectorLength;
                 }
                 int64_t curUbLoops = (mVectorLength + tilingData->stage1MFactor - 1) / tilingData->stage1MFactor;
